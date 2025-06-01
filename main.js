@@ -49,278 +49,125 @@ Actor.main(async () => {
                 log.info(`Waiting ${waitTime} seconds for dynamic content to load...`);
                 await page.waitForTimeout(waitTime * 1000);
 
+                // Take a screenshot for debugging
+                await page.screenshot({ path: 'debug-screenshot.png' });
+                log.info('Saved debug screenshot to debug-screenshot.png');
+
+                // Save HTML for debugging
+                const html = await page.content();
+                await Actor.setValue('debug-html', html);
+                log.info('Saved HTML to Key-Value store as debug-html');
+
                 // Debug: Log the page title
                 const pageTitle = await page.title();
                 log.info(`Page title: ${pageTitle}`);
 
-                // Inject helper functions for content analysis
-                await page.evaluate(() => {
-                    window.isMainContent = function(element) {
-                        // Check if element is in a sidebar, header, footer, or navigation
-                        const isInSidebar = 
-                            element.closest('[class*="sidebar"], [id*="sidebar"], [class*="widget"], [class*="related"], [class*="latest"], [class*="most-read"]') !== null ||
-                            element.closest('[class*="footer"], [id*="footer"], [class*="header"], [id*="header"]') !== null ||
-                            element.closest('nav, [role="navigation"]') !== null;
-                        
-                        // If it's clearly in a sidebar, immediately reject
-                        if (isInSidebar) return false;
-                        
-                        // Check if element is in a main content area
-                        const isInMainContent = 
-                            element.closest('main, [role="main"], [id*="content"], [class*="content"], [id*="main"], [class*="main"], article') !== null;
-                        
-                        // Check if element has significant content
-                        const hasSignificantContent = 
-                            element.textContent.length > 150 && 
-                            element.querySelectorAll('h1, h2, h3, h4, p').length > 1;
-                        
-                        // Check if element is part of search results
-                        const isSearchResult = 
-                            element.closest('[class*="search-result"], [class*="search_result"]') !== null ||
-                            (element.parentElement && element.parentElement.children.length > 1 && 
-                             Array.from(element.parentElement.children).some(sibling => 
-                                 sibling.textContent.includes('Results') || 
-                                 sibling.textContent.includes('Search')
-                             ));
-                        
-                        // Check if element is in the main column by analyzing layout
-                        let isInMainColumn = false;
-                        const viewportWidth = window.innerWidth;
-                        const elementRect = element.getBoundingClientRect();
-                        const elementCenterX = elementRect.left + (elementRect.width / 2);
-                        
-                        // Elements in the middle third of the page are more likely to be main content
-                        if (elementCenterX > viewportWidth * 0.25 && elementCenterX < viewportWidth * 0.75) {
-                            isInMainColumn = true;
-                        }
-                        
-                        return (isInMainContent || isSearchResult || isInMainColumn) && hasSignificantContent && !isInSidebar;
+                // DIRECT APPROACH: Extract search results using a combination of strategies
+                log.info('Extracting search results using direct approach...');
+                
+                // Try to find search results directly
+                const searchResults = await page.evaluate(() => {
+                    // Helper function to check if text contains search-related terms
+                    const isSearchRelated = (text) => {
+                        const searchTerms = ['search', 'result', 'found', 'query'];
+                        return searchTerms.some(term => text.toLowerCase().includes(term));
                     };
                     
-                    window.getArticleConfidence = function(element) {
-                        let score = 0;
+                    // Helper function to check if an element is likely a search result
+                    const isLikelySearchResult = (element) => {
+                        // Check if it has a heading and link
+                        const hasHeading = element.querySelector('h1, h2, h3, h4') !== null;
+                        const hasLink = element.querySelector('a') !== null;
                         
-                        // Score based on element type
-                        if (element.tagName === 'ARTICLE') score += 0.3;
-                        else if (element.classList.contains('article')) score += 0.25;
-                        else if (element.classList.contains('post')) score += 0.25;
-                        else if (element.classList.contains('news-item')) score += 0.25;
-                        else if (element.classList.contains('story')) score += 0.25;
-                        else if (element.classList.contains('search-result')) score += 0.3;
+                        // Check if it has substantial content
+                        const hasContent = element.textContent.trim().length > 100;
                         
-                        // Score based on content
-                        if (element.querySelector('h1, h2, h3, h4')) score += 0.2;
-                        if (element.querySelector('a')) score += 0.1;
-                        if (element.querySelector('p')) score += 0.1;
-                        if (element.querySelector('time, [datetime], [class*="date"]')) score += 0.2;
+                        // Check if it's not in a sidebar
+                        const notInSidebar = 
+                            !element.closest('[class*="sidebar"], [id*="sidebar"], [class*="widget"], [class*="latest"], [class*="most-read"]') &&
+                            !element.closest('[class*="footer"], [id*="footer"], [class*="header"], [id*="header"]') &&
+                            !element.closest('nav, [role="navigation"]');
                         
-                        // Score based on position
-                        const viewportWidth = window.innerWidth;
-                        const elementRect = element.getBoundingClientRect();
-                        const elementCenterX = elementRect.left + (elementRect.width / 2);
-                        
-                        // Elements in the middle of the page get higher score
-                        if (elementCenterX > viewportWidth * 0.4 && elementCenterX < viewportWidth * 0.6) {
-                            score += 0.2;
-                        } else if (elementCenterX > viewportWidth * 0.3 && elementCenterX < viewportWidth * 0.7) {
-                            score += 0.1;
-                        }
-                        
-                        return Math.min(score, 0.95);
+                        return hasHeading && hasLink && hasContent && notInSidebar;
                     };
-                });
-
-                // ADAPTIVE APPROACH: Detect article elements using multiple strategies
-                log.info('Detecting article elements using adaptive strategies...');
-                
-                // Strategy 1: Look for search results specifically
-                const searchResults = await page.$$eval('.search-results article, .search-result, [class*="search-result"], [class*="search"] article, [class*="result"] article, [class*="search"] .item', 
-                    (elements) => {
-                        return elements.map((el, index) => {
-                            if (window.isMainContent(el)) {
-                                return {
-                                    index,
-                                    method: 'searchResults',
-                                    confidence: window.getArticleConfidence(el)
-                                };
-                            }
-                            return null;
-                        }).filter(item => item !== null);
-                    }
-                );
-                log.info(`Found ${searchResults.length} search result elements`);
-                
-                // Strategy 2: Look for semantic HTML elements
-                const semanticArticles = await page.$$eval('article, .article, [class*="article"], [class*="post"], [class*="news-item"], [class*="story"]', 
-                    (elements) => {
-                        return elements.map((el, index) => {
-                            if (window.isMainContent(el)) {
-                                return {
-                                    index,
-                                    method: 'semanticHTML',
-                                    confidence: window.getArticleConfidence(el)
-                                };
-                            }
-                            return null;
-                        }).filter(item => item !== null);
-                    }
-                );
-                log.info(`Found ${semanticArticles.length} semantic HTML elements`);
-                
-                // Strategy 3: Look for content containers with specific patterns
-                const contentContainers = await page.$$eval('div[class*="content"] > div, div[class*="search-result"], div[class*="listing"] > div, div[class*="feed"] > div', 
-                    (elements) => {
-                        return elements.map((el, index) => {
-                            // Only consider elements with substantial content
-                            if (el.textContent.length > 100 && el.querySelectorAll('a, h1, h2, h3, h4, p').length > 0 && window.isMainContent(el)) {
-                                return {
-                                    index,
-                                    method: 'contentPattern',
-                                    confidence: window.getArticleConfidence(el)
-                                };
-                            }
-                            return null;
-                        }).filter(item => item !== null);
-                    }
-                );
-                log.info(`Found ${contentContainers.length} content containers`);
-                
-                // Strategy 4: Look for repeated structures (common in listings)
-                const repeatedStructures = await page.$$eval('div > div, section > div, main > div', 
-                    (elements) => {
-                        // Group similar elements by structure
-                        const groups = {};
-                        
-                        elements.forEach((el, index) => {
-                            // Create a simple signature based on element structure
-                            const hasHeading = el.querySelector('h1, h2, h3, h4, h5, h6') !== null;
-                            const hasLink = el.querySelector('a') !== null;
-                            const hasImage = el.querySelector('img') !== null;
-                            const hasText = el.textContent.trim().length > 100;
-                            
-                            if (hasHeading && hasLink && hasText && window.isMainContent(el)) {
-                                const signature = `${hasHeading}-${hasLink}-${hasImage}-${hasText}`;
-                                
-                                if (!groups[signature]) {
-                                    groups[signature] = [];
-                                }
-                                
-                                groups[signature].push({
-                                    index,
-                                    method: 'repeatedStructure',
-                                    confidence: window.getArticleConfidence(el)
-                                });
-                            }
-                        });
-                        
-                        // Only consider groups with multiple similar elements (likely listings)
-                        let results = [];
-                        Object.values(groups).forEach(group => {
-                            if (group.length >= 2) {
-                                results = results.concat(group);
-                            }
-                        });
-                        
-                        return results;
-                    }
-                );
-                log.info(`Found ${repeatedStructures.length} repeated structures`);
-                
-                // Combine all detected articles and remove duplicates
-                const allDetectedElements = [];
-                
-                // Process each detection strategy and add to allDetectedElements
-                for (const strategy of ['searchResults', 'semanticHTML', 'contentPattern', 'repeatedStructure']) {
-                    let elements;
                     
-                    if (strategy === 'searchResults') {
-                        elements = searchResults;
-                    } else if (strategy === 'semanticHTML') {
-                        elements = semanticArticles;
-                    } else if (strategy === 'contentPattern') {
-                        elements = contentContainers;
-                    } else {
-                        elements = repeatedStructures;
+                    // Find search result container
+                    let searchContainer = null;
+                    
+                    // Method 1: Look for elements with search-related classes
+                    const searchClassContainers = document.querySelectorAll('[class*="search-result"], [class*="search_result"], [class*="searchresult"], [class*="search-container"]');
+                    if (searchClassContainers.length > 0) {
+                        searchContainer = searchClassContainers[0];
                     }
                     
-                    // Add elements from this strategy
-                    for (let i = 0; i < elements.length; i++) {
-                        const element = elements[i];
-                        
-                        // Extract data using adaptive selectors
-                        const articleData = await page.evaluate(({ index, strategy }) => {
-                            let element;
-                            
-                            // Find the element based on strategy
-                            if (strategy === 'searchResults') {
-                                const elements = document.querySelectorAll('.search-results article, .search-result, [class*="search-result"], [class*="search"] article, [class*="result"] article, [class*="search"] .item');
-                                let validElements = [];
-                                for (const el of elements) {
-                                    if (window.isMainContent(el)) {
-                                        validElements.push(el);
-                                    }
+                    // Method 2: Look for headings that indicate search results
+                    if (!searchContainer) {
+                        const searchHeadings = Array.from(document.querySelectorAll('h1, h2, h3, h4')).filter(h => isSearchRelated(h.textContent));
+                        if (searchHeadings.length > 0) {
+                            // Get the parent container of the heading
+                            searchContainer = searchHeadings[0].parentElement;
+                            // Go up a few levels to find a container with multiple children
+                            for (let i = 0; i < 3; i++) {
+                                if (searchContainer && searchContainer.children.length > 3) {
+                                    break;
                                 }
-                                element = validElements[index];
-                            } else if (strategy === 'semanticHTML') {
-                                const elements = document.querySelectorAll('article, .article, [class*="article"], [class*="post"], [class*="news-item"], [class*="story"]');
-                                let validElements = [];
-                                for (const el of elements) {
-                                    if (window.isMainContent(el)) {
-                                        validElements.push(el);
-                                    }
+                                if (searchContainer && searchContainer.parentElement) {
+                                    searchContainer = searchContainer.parentElement;
                                 }
-                                element = validElements[index];
-                            } else if (strategy === 'contentPattern') {
-                                const elements = document.querySelectorAll('div[class*="content"] > div, div[class*="search-result"], div[class*="listing"] > div, div[class*="feed"] > div');
-                                let validElements = [];
-                                for (const el of elements) {
-                                    if (el.textContent.length > 100 && el.querySelectorAll('a, h1, h2, h3, h4, p').length > 0 && window.isMainContent(el)) {
-                                        validElements.push(el);
-                                    }
-                                }
-                                element = validElements[index];
-                            } else {
-                                // For repeatedStructure, we need to recalculate the groups
-                                const elements = document.querySelectorAll('div > div, section > div, main > div');
-                                let validElements = [];
-                                for (const el of elements) {
-                                    const hasHeading = el.querySelector('h1, h2, h3, h4, h5, h6') !== null;
-                                    const hasLink = el.querySelector('a') !== null;
-                                    const hasText = el.textContent.trim().length > 100;
-                                    
-                                    if (hasHeading && hasLink && hasText && window.isMainContent(el)) {
-                                        validElements.push(el);
-                                    }
-                                }
-                                element = validElements[index];
                             }
-                            
-                            if (!element) return null;
-                            
-                            // ADAPTIVE EXTRACTION: Try multiple selectors for each field
-                            
-                            // Title extraction
+                        }
+                    }
+                    
+                    // Method 3: Look for elements with search in URL path that contain articles
+                    if (!searchContainer && window.location.pathname.includes('search')) {
+                        // Find the main content area
+                        const mainContent = document.querySelector('main, [role="main"], [id*="content"], [class*="content"], [id*="main"], [class*="main"]');
+                        if (mainContent) {
+                            searchContainer = mainContent;
+                        }
+                    }
+                    
+                    // If we found a search container, extract the results
+                    let results = [];
+                    if (searchContainer) {
+                        // Look for article elements or divs that look like search results
+                        const potentialResults = [
+                            ...Array.from(searchContainer.querySelectorAll('article')),
+                            ...Array.from(searchContainer.querySelectorAll('div')).filter(isLikelySearchResult)
+                        ];
+                        
+                        // Extract data from each result
+                        results = potentialResults.map(element => {
+                            // Extract title
                             let title = null;
                             let titleElement = null;
                             
-                            // Try multiple selectors for title
-                            const titleSelectors = [
-                                'h1, h2, h3, h4', // Headings
-                                'a[class*="title"], a[class*="headline"], a[class*="heading"]', // Classed anchors
-                                'a:has(h1), a:has(h2), a:has(h3), a:has(h4)', // Anchors with headings
-                                'a', // Any anchor (last resort)
-                                '[class*="title"], [class*="headline"], [class*="heading"]' // Elements with title-like classes
-                            ];
+                            // Try to find title in headings
+                            const headings = element.querySelectorAll('h1, h2, h3, h4');
+                            if (headings.length > 0) {
+                                titleElement = headings[0];
+                                title = titleElement.textContent.trim();
+                            }
                             
-                            for (const selector of titleSelectors) {
-                                titleElement = element.querySelector(selector);
-                                if (titleElement) {
+                            // If no heading, try links with title-like classes
+                            if (!title) {
+                                const titleLinks = element.querySelectorAll('a[class*="title"], a[class*="headline"], a[class*="heading"]');
+                                if (titleLinks.length > 0) {
+                                    titleElement = titleLinks[0];
                                     title = titleElement.textContent.trim();
-                                    if (title && title.length > 5) break;
                                 }
                             }
                             
-                            // Link extraction
+                            // If still no title, try any link
+                            if (!title) {
+                                const links = element.querySelectorAll('a');
+                                if (links.length > 0) {
+                                    titleElement = links[0];
+                                    title = titleElement.textContent.trim();
+                                }
+                            }
+                            
+                            // Extract link
                             let link = null;
                             
                             // If title element is or contains an anchor, use its href
@@ -335,59 +182,59 @@ Actor.main(async () => {
                                 }
                             }
                             
-                            // If no link found yet, try other selectors
+                            // If no link found yet, try other links
                             if (!link) {
-                                const linkSelectors = [
-                                    'a[class*="link"], a[class*="read-more"]',
-                                    'a:has(img)',
-                                    'a'
-                                ];
-                                
-                                for (const selector of linkSelectors) {
-                                    const linkElement = element.querySelector(selector);
-                                    if (linkElement) {
-                                        link = linkElement.href;
-                                        if (link) break;
-                                    }
+                                const links = element.querySelectorAll('a');
+                                if (links.length > 0) {
+                                    link = links[0].href;
                                 }
                             }
                             
-                            // Date extraction
+                            // Extract date
                             let date = null;
                             
-                            const dateSelectors = [
-                                'time, [datetime]', // Semantic time elements
-                                '[class*="date"], [class*="time"], [class*="published"]', // Date classes
-                                'span:has([class*="date"]), div:has([class*="date"])' // Containers with date classes
-                            ];
+                            // Try time elements
+                            const timeElements = element.querySelectorAll('time, [datetime]');
+                            if (timeElements.length > 0) {
+                                const timeEl = timeElements[0];
+                                date = timeEl.getAttribute('datetime') || timeEl.textContent.trim();
+                            }
                             
-                            for (const selector of dateSelectors) {
-                                const dateElement = element.querySelector(selector);
-                                if (dateElement) {
-                                    // Try datetime attribute first
-                                    if (dateElement.getAttribute('datetime')) {
-                                        date = dateElement.getAttribute('datetime');
-                                    } else {
-                                        date = dateElement.textContent.trim();
-                                    }
-                                    if (date) break;
+                            // Try elements with date-like classes
+                            if (!date) {
+                                const dateElements = element.querySelectorAll('[class*="date"], [class*="time"], [class*="published"]');
+                                if (dateElements.length > 0) {
+                                    date = dateElements[0].textContent.trim();
                                 }
                             }
                             
-                            // Summary extraction
+                            // Extract summary
                             let summary = null;
                             
-                            const summarySelectors = [
-                                '[class*="summary"], [class*="excerpt"], [class*="description"], [class*="teaser"]',
-                                'p',
-                                'div[class*="body"], div[class*="content"]'
-                            ];
+                            // Try elements with summary-like classes
+                            const summaryElements = element.querySelectorAll('[class*="summary"], [class*="excerpt"], [class*="description"], [class*="teaser"]');
+                            if (summaryElements.length > 0) {
+                                summary = summaryElements[0].textContent.trim();
+                            }
                             
-                            for (const selector of summarySelectors) {
-                                const summaryElement = element.querySelector(selector);
-                                if (summaryElement) {
-                                    summary = summaryElement.textContent.trim();
-                                    if (summary && summary.length > 20) break;
+                            // Try paragraphs
+                            if (!summary) {
+                                const paragraphs = element.querySelectorAll('p');
+                                if (paragraphs.length > 0) {
+                                    summary = paragraphs[0].textContent.trim();
+                                }
+                            }
+                            
+                            // If still no summary, use the element's text content
+                            if (!summary) {
+                                // Get all text nodes that are direct children
+                                const textNodes = Array.from(element.childNodes)
+                                    .filter(node => node.nodeType === 3)
+                                    .map(node => node.textContent.trim())
+                                    .filter(text => text.length > 0);
+                                
+                                if (textNodes.length > 0) {
+                                    summary = textNodes.join(' ');
                                 }
                             }
                             
@@ -411,62 +258,369 @@ Actor.main(async () => {
                                     overall: overallConfidence
                                 },
                                 methods: {
-                                    title: strategy,
-                                    link: strategy,
-                                    date: strategy,
-                                    summary: strategy
+                                    title: 'direct',
+                                    link: 'direct',
+                                    date: 'direct',
+                                    summary: 'direct'
                                 }
                             };
-                        }, { index: element.index, strategy });
+                        });
+                    }
+                    
+                    // If no results found through search container, try a more generic approach
+                    if (results.length === 0) {
+                        // Look for any articles or article-like elements in the page
+                        const articles = [
+                            ...Array.from(document.querySelectorAll('article')),
+                            ...Array.from(document.querySelectorAll('div')).filter(isLikelySearchResult)
+                        ];
                         
-                        // Only add if we have at least a title and link
-                        if (articleData && articleData.title && articleData.link) {
-                            allDetectedElements.push(articleData);
-                            methodsUsed.add(strategy);
-                            log.info(`Successfully extracted article using ${strategy}: ${articleData.title}`);
+                        // Extract data from each article
+                        results = articles.map(element => {
+                            // Same extraction logic as above
+                            // Extract title
+                            let title = null;
+                            let titleElement = null;
+                            
+                            // Try to find title in headings
+                            const headings = element.querySelectorAll('h1, h2, h3, h4');
+                            if (headings.length > 0) {
+                                titleElement = headings[0];
+                                title = titleElement.textContent.trim();
+                            }
+                            
+                            // If no heading, try links with title-like classes
+                            if (!title) {
+                                const titleLinks = element.querySelectorAll('a[class*="title"], a[class*="headline"], a[class*="heading"]');
+                                if (titleLinks.length > 0) {
+                                    titleElement = titleLinks[0];
+                                    title = titleElement.textContent.trim();
+                                }
+                            }
+                            
+                            // If still no title, try any link
+                            if (!title) {
+                                const links = element.querySelectorAll('a');
+                                if (links.length > 0) {
+                                    titleElement = links[0];
+                                    title = titleElement.textContent.trim();
+                                }
+                            }
+                            
+                            // Extract link
+                            let link = null;
+                            
+                            // If title element is or contains an anchor, use its href
+                            if (titleElement) {
+                                if (titleElement.tagName === 'A') {
+                                    link = titleElement.href;
+                                } else {
+                                    const anchorInTitle = titleElement.querySelector('a');
+                                    if (anchorInTitle) {
+                                        link = anchorInTitle.href;
+                                    }
+                                }
+                            }
+                            
+                            // If no link found yet, try other links
+                            if (!link) {
+                                const links = element.querySelectorAll('a');
+                                if (links.length > 0) {
+                                    link = links[0].href;
+                                }
+                            }
+                            
+                            // Extract date
+                            let date = null;
+                            
+                            // Try time elements
+                            const timeElements = element.querySelectorAll('time, [datetime]');
+                            if (timeElements.length > 0) {
+                                const timeEl = timeElements[0];
+                                date = timeEl.getAttribute('datetime') || timeEl.textContent.trim();
+                            }
+                            
+                            // Try elements with date-like classes
+                            if (!date) {
+                                const dateElements = element.querySelectorAll('[class*="date"], [class*="time"], [class*="published"]');
+                                if (dateElements.length > 0) {
+                                    date = dateElements[0].textContent.trim();
+                                }
+                            }
+                            
+                            // Extract summary
+                            let summary = null;
+                            
+                            // Try elements with summary-like classes
+                            const summaryElements = element.querySelectorAll('[class*="summary"], [class*="excerpt"], [class*="description"], [class*="teaser"]');
+                            if (summaryElements.length > 0) {
+                                summary = summaryElements[0].textContent.trim();
+                            }
+                            
+                            // Try paragraphs
+                            if (!summary) {
+                                const paragraphs = element.querySelectorAll('p');
+                                if (paragraphs.length > 0) {
+                                    summary = paragraphs[0].textContent.trim();
+                                }
+                            }
+                            
+                            // If still no summary, use the element's text content
+                            if (!summary) {
+                                // Get all text nodes that are direct children
+                                const textNodes = Array.from(element.childNodes)
+                                    .filter(node => node.nodeType === 3)
+                                    .map(node => node.textContent.trim())
+                                    .filter(text => text.length > 0);
+                                
+                                if (textNodes.length > 0) {
+                                    summary = textNodes.join(' ');
+                                }
+                            }
+                            
+                            // Calculate confidence scores
+                            const titleConfidence = title ? 0.9 : 0;
+                            const linkConfidence = link ? 0.9 : 0;
+                            const dateConfidence = date ? 0.8 : 0;
+                            const summaryConfidence = summary ? 0.8 : 0;
+                            const overallConfidence = (titleConfidence + linkConfidence + dateConfidence + summaryConfidence) / 4;
+                            
+                            return {
+                                title,
+                                link,
+                                date,
+                                summary,
+                                confidence: {
+                                    title: titleConfidence,
+                                    link: linkConfidence,
+                                    date: dateConfidence,
+                                    summary: summaryConfidence,
+                                    overall: overallConfidence
+                                },
+                                methods: {
+                                    title: 'generic',
+                                    link: 'generic',
+                                    date: 'generic',
+                                    summary: 'generic'
+                                }
+                            };
+                        });
+                    }
+                    
+                    // Filter out results without title or link
+                    return results.filter(result => result.title && result.link);
+                });
+                
+                log.info(`Found ${searchResults.length} search results using direct approach`);
+                
+                // If we found results, save them
+                if (searchResults.length > 0) {
+                    methodsUsed.add('direct');
+                    
+                    // Log each result
+                    searchResults.forEach((result, index) => {
+                        log.info(`Result ${index + 1}: ${result.title}`);
+                    });
+                    
+                    // Limit to maxItems if specified
+                    const limitedResults = maxItems > 0 ? searchResults.slice(0, maxItems) : searchResults;
+                    
+                    // Save the results to the dataset
+                    await dataset.pushData(limitedResults);
+                    extractedCount += limitedResults.length;
+                    
+                    // Check if we've reached the maximum number of items
+                    if (maxItems > 0 && extractedCount >= maxItems) {
+                        log.info(`Reached maximum number of items (${maxItems}), stopping the crawler.`);
+                        await crawler.stop();
+                    }
+                } else {
+                    log.info('No search results found using direct approach, trying fallback methods...');
+                    
+                    // Fallback: Try to extract any article-like elements
+                    const fallbackResults = await page.evaluate(() => {
+                        // Helper function to check if an element is likely an article
+                        const isLikelyArticle = (element) => {
+                            // Check if it has a heading and link
+                            const hasHeading = element.querySelector('h1, h2, h3, h4') !== null;
+                            const hasLink = element.querySelector('a') !== null;
+                            
+                            // Check if it has substantial content
+                            const hasContent = element.textContent.trim().length > 100;
+                            
+                            // Check if it's not in a sidebar
+                            const notInSidebar = 
+                                !element.closest('[class*="sidebar"], [id*="sidebar"], [class*="widget"], [class*="latest"], [class*="most-read"]') &&
+                                !element.closest('[class*="footer"], [id*="footer"], [class*="header"], [id*="header"]') &&
+                                !element.closest('nav, [role="navigation"]');
+                            
+                            return hasHeading && hasLink && hasContent && notInSidebar;
+                        };
+                        
+                        // Find all article-like elements
+                        const articles = [
+                            ...Array.from(document.querySelectorAll('article')),
+                            ...Array.from(document.querySelectorAll('div')).filter(isLikelyArticle)
+                        ];
+                        
+                        // Extract data from each article
+                        const results = articles.map(element => {
+                            // Extract title
+                            let title = null;
+                            let titleElement = null;
+                            
+                            // Try to find title in headings
+                            const headings = element.querySelectorAll('h1, h2, h3, h4');
+                            if (headings.length > 0) {
+                                titleElement = headings[0];
+                                title = titleElement.textContent.trim();
+                            }
+                            
+                            // If no heading, try links with title-like classes
+                            if (!title) {
+                                const titleLinks = element.querySelectorAll('a[class*="title"], a[class*="headline"], a[class*="heading"]');
+                                if (titleLinks.length > 0) {
+                                    titleElement = titleLinks[0];
+                                    title = titleElement.textContent.trim();
+                                }
+                            }
+                            
+                            // If still no title, try any link
+                            if (!title) {
+                                const links = element.querySelectorAll('a');
+                                if (links.length > 0) {
+                                    titleElement = links[0];
+                                    title = titleElement.textContent.trim();
+                                }
+                            }
+                            
+                            // Extract link
+                            let link = null;
+                            
+                            // If title element is or contains an anchor, use its href
+                            if (titleElement) {
+                                if (titleElement.tagName === 'A') {
+                                    link = titleElement.href;
+                                } else {
+                                    const anchorInTitle = titleElement.querySelector('a');
+                                    if (anchorInTitle) {
+                                        link = anchorInTitle.href;
+                                    }
+                                }
+                            }
+                            
+                            // If no link found yet, try other links
+                            if (!link) {
+                                const links = element.querySelectorAll('a');
+                                if (links.length > 0) {
+                                    link = links[0].href;
+                                }
+                            }
+                            
+                            // Extract date
+                            let date = null;
+                            
+                            // Try time elements
+                            const timeElements = element.querySelectorAll('time, [datetime]');
+                            if (timeElements.length > 0) {
+                                const timeEl = timeElements[0];
+                                date = timeEl.getAttribute('datetime') || timeEl.textContent.trim();
+                            }
+                            
+                            // Try elements with date-like classes
+                            if (!date) {
+                                const dateElements = element.querySelectorAll('[class*="date"], [class*="time"], [class*="published"]');
+                                if (dateElements.length > 0) {
+                                    date = dateElements[0].textContent.trim();
+                                }
+                            }
+                            
+                            // Extract summary
+                            let summary = null;
+                            
+                            // Try elements with summary-like classes
+                            const summaryElements = element.querySelectorAll('[class*="summary"], [class*="excerpt"], [class*="description"], [class*="teaser"]');
+                            if (summaryElements.length > 0) {
+                                summary = summaryElements[0].textContent.trim();
+                            }
+                            
+                            // Try paragraphs
+                            if (!summary) {
+                                const paragraphs = element.querySelectorAll('p');
+                                if (paragraphs.length > 0) {
+                                    summary = paragraphs[0].textContent.trim();
+                                }
+                            }
+                            
+                            // If still no summary, use the element's text content
+                            if (!summary) {
+                                // Get all text nodes that are direct children
+                                const textNodes = Array.from(element.childNodes)
+                                    .filter(node => node.nodeType === 3)
+                                    .map(node => node.textContent.trim())
+                                    .filter(text => text.length > 0);
+                                
+                                if (textNodes.length > 0) {
+                                    summary = textNodes.join(' ');
+                                }
+                            }
+                            
+                            // Calculate confidence scores
+                            const titleConfidence = title ? 0.9 : 0;
+                            const linkConfidence = link ? 0.9 : 0;
+                            const dateConfidence = date ? 0.8 : 0;
+                            const summaryConfidence = summary ? 0.8 : 0;
+                            const overallConfidence = (titleConfidence + linkConfidence + dateConfidence + summaryConfidence) / 4;
+                            
+                            return {
+                                title,
+                                link,
+                                date,
+                                summary,
+                                confidence: {
+                                    title: titleConfidence,
+                                    link: linkConfidence,
+                                    date: dateConfidence,
+                                    summary: summaryConfidence,
+                                    overall: overallConfidence
+                                },
+                                methods: {
+                                    title: 'fallback',
+                                    link: 'fallback',
+                                    date: 'fallback',
+                                    summary: 'fallback'
+                                }
+                            };
+                        });
+                        
+                        // Filter out results without title or link
+                        return results.filter(result => result.title && result.link);
+                    });
+                    
+                    log.info(`Found ${fallbackResults.length} results using fallback method`);
+                    
+                    // If we found results, save them
+                    if (fallbackResults.length > 0) {
+                        methodsUsed.add('fallback');
+                        
+                        // Log each result
+                        fallbackResults.forEach((result, index) => {
+                            log.info(`Result ${index + 1}: ${result.title}`);
+                        });
+                        
+                        // Limit to maxItems if specified
+                        const limitedResults = maxItems > 0 ? fallbackResults.slice(0, maxItems) : fallbackResults;
+                        
+                        // Save the results to the dataset
+                        await dataset.pushData(limitedResults);
+                        extractedCount += limitedResults.length;
+                        
+                        // Check if we've reached the maximum number of items
+                        if (maxItems > 0 && extractedCount >= maxItems) {
+                            log.info(`Reached maximum number of items (${maxItems}), stopping the crawler.`);
+                            await crawler.stop();
                         }
                     }
-                }
-                
-                // Sort by confidence and remove duplicates
-                const uniqueArticles = [];
-                const seenLinks = new Set();
-                const seenTitles = new Set();
-                
-                // Sort by confidence (highest first)
-                allDetectedElements.sort((a, b) => b.confidence.overall - a.confidence.overall);
-                
-                // Remove duplicates based on link or title
-                for (const article of allDetectedElements) {
-                    // Normalize link by removing trailing slashes and query parameters
-                    const normalizedLink = article.link.replace(/\/$/, '').split('?')[0];
-                    
-                    // Normalize title by removing extra whitespace and converting to lowercase
-                    const normalizedTitle = article.title.toLowerCase().replace(/\s+/g, ' ').trim();
-                    
-                    if (!seenLinks.has(normalizedLink) && !seenTitles.has(normalizedTitle)) {
-                        uniqueArticles.push(article);
-                        seenLinks.add(normalizedLink);
-                        seenTitles.add(normalizedTitle);
-                        
-                        // Stop if we've reached the maximum
-                        if (maxItems > 0 && uniqueArticles.length >= maxItems) {
-                            break;
-                        }
-                    }
-                }
-                
-                // Log the number of extracted items
-                log.info(`Successfully extracted ${uniqueArticles.length} unique news items`);
-                
-                // Save the results to the dataset
-                await dataset.pushData(uniqueArticles);
-                extractedCount += uniqueArticles.length;
-
-                // Check if we've reached the maximum number of items
-                if (maxItems > 0 && extractedCount >= maxItems) {
-                    log.info(`Reached maximum number of items (${maxItems}), stopping the crawler.`);
-                    await crawler.stop();
                 }
             } catch (error) {
                 log.error(`Error processing ${request.url}: ${error.message}`);
