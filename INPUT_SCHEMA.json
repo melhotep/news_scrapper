@@ -1,0 +1,31 @@
+{
+  "title": "Adaptive News Scraper Input",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "url": {
+      "title": "URL",
+      "type": "string",
+      "description": "URL of the news site to scrape",
+      "editor": "textfield"
+    },
+    "maxItems": {
+      "title": "Maximum Items",
+      "type": "integer",
+      "description": "Maximum number of news items to extract (0 for unlimited)",
+      "default": 0,
+      "minimum": 0,
+      "editor": "number"
+    },
+    "waitTime": {
+      "title": "Wait Time",
+      "type": "integer",
+      "description": "Time to wait for dynamic content to load (in seconds)",
+      "default": 10,
+      "minimum": 1,
+      "maximum": 60,
+      "editor": "number"
+    }
+  },
+  "required": ["url"]
+}

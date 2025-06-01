@@ -1,0 +1,21 @@
+{
+  "name": "adaptive-news-scraper",
+  "version": "1.0.0",
+  "description": "Apify actor for adaptively scraping news items from various dynamic news sites",
+  "main": "main.js",
+  "dependencies": {
+    "apify": "^3.1.1",
+    "crawlee": "^3.0.0",
+    "playwright": "^1.32.0",
+    "cheerio": "^1.0.0-rc.12",
+    "@mozilla/readability": "^0.4.2",
+    "jsdom": "^21.1.0",
+    "date-fns": "^2.29.3",
+    "date-fns-tz": "^2.0.0"
+  },
+  "scripts": {
+    "start": "node main.js"
+  },
+  "author": "",
+  "license": "ISC"
+}
