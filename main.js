@@ -8,33 +8,6 @@
 const { Actor } = require('apify');
 const { PlaywrightCrawler, Dataset } = require('crawlee');
 
-// Helper function to determine if an element is likely main content vs sidebar/header/footer
-function isMainContent(element) {
-    // Check if element is likely part of a sidebar, header, footer, or navigation
-    const isLikelySidebar = 
-        element.closest('[class*="sidebar"], [id*="sidebar"], [class*="widget"], [class*="related"], [class*="latest"]') !== null ||
-        element.closest('[class*="footer"], [id*="footer"], [class*="header"], [id*="header"]') !== null ||
-        element.closest('nav, [role="navigation"]') !== null;
-    
-    // Check if element is likely a main content area
-    const isLikelyMainContent = 
-        element.closest('main, [role="main"], [id*="content"], [class*="content"], [id*="main"], [class*="main"], article') !== null;
-    
-    // Check if element has significant content
-    const hasSignificantContent = 
-        element.textContent.length > 150 && 
-        element.querySelectorAll('h1, h2, h3, h4, p').length > 1;
-    
-    // For search results, prioritize elements with dates and relevant content
-    const hasDateAndRelevance = 
-        (element.querySelector('[class*="date"], time, [datetime]') !== null) && 
-        element.textContent.toLowerCase().includes('oil') || 
-        element.textContent.toLowerCase().includes('energy') || 
-        element.textContent.toLowerCase().includes('news');
-    
-    return ((!isLikelySidebar || isLikelyMainContent) && hasSignificantContent) || hasDateAndRelevance;
-}
-
 // Initialize the Actor
 Actor.main(async () => {
     // Get input from the user
@@ -76,12 +49,86 @@ Actor.main(async () => {
                 log.info(`Waiting ${waitTime} seconds for dynamic content to load...`);
                 await page.waitForTimeout(waitTime * 1000);
 
-                // Get the HTML content of the page
-                const html = await page.content();
-                
                 // Debug: Log the page title
                 const pageTitle = await page.title();
                 log.info(`Page title: ${pageTitle}`);
+
+                // Inject helper functions for content analysis
+                await page.evaluate(() => {
+                    window.isMainContent = function(element) {
+                        // Check if element is in a sidebar, header, footer, or navigation
+                        const isInSidebar = 
+                            element.closest('[class*="sidebar"], [id*="sidebar"], [class*="widget"], [class*="related"], [class*="latest"], [class*="most-read"]') !== null ||
+                            element.closest('[class*="footer"], [id*="footer"], [class*="header"], [id*="header"]') !== null ||
+                            element.closest('nav, [role="navigation"]') !== null;
+                        
+                        // If it's clearly in a sidebar, immediately reject
+                        if (isInSidebar) return false;
+                        
+                        // Check if element is in a main content area
+                        const isInMainContent = 
+                            element.closest('main, [role="main"], [id*="content"], [class*="content"], [id*="main"], [class*="main"], article') !== null;
+                        
+                        // Check if element has significant content
+                        const hasSignificantContent = 
+                            element.textContent.length > 150 && 
+                            element.querySelectorAll('h1, h2, h3, h4, p').length > 1;
+                        
+                        // Check if element is part of search results
+                        const isSearchResult = 
+                            element.closest('[class*="search-result"], [class*="search_result"]') !== null ||
+                            (element.parentElement && element.parentElement.children.length > 1 && 
+                             Array.from(element.parentElement.children).some(sibling => 
+                                 sibling.textContent.includes('Results') || 
+                                 sibling.textContent.includes('Search')
+                             ));
+                        
+                        // Check if element is in the main column by analyzing layout
+                        let isInMainColumn = false;
+                        const viewportWidth = window.innerWidth;
+                        const elementRect = element.getBoundingClientRect();
+                        const elementCenterX = elementRect.left + (elementRect.width / 2);
+                        
+                        // Elements in the middle third of the page are more likely to be main content
+                        if (elementCenterX > viewportWidth * 0.25 && elementCenterX < viewportWidth * 0.75) {
+                            isInMainColumn = true;
+                        }
+                        
+                        return (isInMainContent || isSearchResult || isInMainColumn) && hasSignificantContent && !isInSidebar;
+                    };
+                    
+                    window.getArticleConfidence = function(element) {
+                        let score = 0;
+                        
+                        // Score based on element type
+                        if (element.tagName === 'ARTICLE') score += 0.3;
+                        else if (element.classList.contains('article')) score += 0.25;
+                        else if (element.classList.contains('post')) score += 0.25;
+                        else if (element.classList.contains('news-item')) score += 0.25;
+                        else if (element.classList.contains('story')) score += 0.25;
+                        else if (element.classList.contains('search-result')) score += 0.3;
+                        
+                        // Score based on content
+                        if (element.querySelector('h1, h2, h3, h4')) score += 0.2;
+                        if (element.querySelector('a')) score += 0.1;
+                        if (element.querySelector('p')) score += 0.1;
+                        if (element.querySelector('time, [datetime], [class*="date"]')) score += 0.2;
+                        
+                        // Score based on position
+                        const viewportWidth = window.innerWidth;
+                        const elementRect = element.getBoundingClientRect();
+                        const elementCenterX = elementRect.left + (elementRect.width / 2);
+                        
+                        // Elements in the middle of the page get higher score
+                        if (elementCenterX > viewportWidth * 0.4 && elementCenterX < viewportWidth * 0.6) {
+                            score += 0.2;
+                        } else if (elementCenterX > viewportWidth * 0.3 && elementCenterX < viewportWidth * 0.7) {
+                            score += 0.1;
+                        }
+                        
+                        return Math.min(score, 0.95);
+                    };
+                });
 
                 // ADAPTIVE APPROACH: Detect article elements using multiple strategies
                 log.info('Detecting article elements using adaptive strategies...');
@@ -90,24 +137,14 @@ Actor.main(async () => {
                 const searchResults = await page.$$eval('.search-results article, .search-result, [class*="search-result"], [class*="search"] article, [class*="result"] article, [class*="search"] .item', 
                     (elements) => {
                         return elements.map((el, index) => {
-                            // Use the isMainContent function
-                            if (window.isMainContent && typeof window.isMainContent === 'function') {
-                                if (window.isMainContent(el)) {
-                                    return {
-                                        index,
-                                        method: 'searchResults',
-                                        confidence: 0.95
-                                    };
-                                }
-                                return null;
-                            } else {
-                                // Fallback if function not available
+                            if (window.isMainContent(el)) {
                                 return {
                                     index,
                                     method: 'searchResults',
-                                    confidence: 0.95
+                                    confidence: window.getArticleConfidence(el)
                                 };
                             }
+                            return null;
                         }).filter(item => item !== null);
                     }
                 );
@@ -117,24 +154,14 @@ Actor.main(async () => {
                 const semanticArticles = await page.$$eval('article, .article, [class*="article"], [class*="post"], [class*="news-item"], [class*="story"]', 
                     (elements) => {
                         return elements.map((el, index) => {
-                            // Use the isMainContent function
-                            if (window.isMainContent && typeof window.isMainContent === 'function') {
-                                if (window.isMainContent(el)) {
-                                    return {
-                                        index,
-                                        method: 'semanticHTML',
-                                        confidence: 0.9
-                                    };
-                                }
-                                return null;
-                            } else {
-                                // Fallback if function not available
+                            if (window.isMainContent(el)) {
                                 return {
                                     index,
                                     method: 'semanticHTML',
-                                    confidence: 0.9
+                                    confidence: window.getArticleConfidence(el)
                                 };
                             }
+                            return null;
                         }).filter(item => item !== null);
                     }
                 );
@@ -145,25 +172,12 @@ Actor.main(async () => {
                     (elements) => {
                         return elements.map((el, index) => {
                             // Only consider elements with substantial content
-                            if (el.textContent.length > 100 && el.querySelectorAll('a, h1, h2, h3, h4, p').length > 0) {
-                                // Use the isMainContent function
-                                if (window.isMainContent && typeof window.isMainContent === 'function') {
-                                    if (window.isMainContent(el)) {
-                                        return {
-                                            index,
-                                            method: 'contentPattern',
-                                            confidence: 0.8
-                                        };
-                                    }
-                                    return null;
-                                } else {
-                                    // Fallback if function not available
-                                    return {
-                                        index,
-                                        method: 'contentPattern',
-                                        confidence: 0.8
-                                    };
-                                }
+                            if (el.textContent.length > 100 && el.querySelectorAll('a, h1, h2, h3, h4, p').length > 0 && window.isMainContent(el)) {
+                                return {
+                                    index,
+                                    method: 'contentPattern',
+                                    confidence: window.getArticleConfidence(el)
+                                };
                             }
                             return null;
                         }).filter(item => item !== null);
@@ -184,37 +198,25 @@ Actor.main(async () => {
                             const hasImage = el.querySelector('img') !== null;
                             const hasText = el.textContent.trim().length > 100;
                             
-                            if (hasHeading && hasLink && hasText) {
+                            if (hasHeading && hasLink && hasText && window.isMainContent(el)) {
                                 const signature = `${hasHeading}-${hasLink}-${hasImage}-${hasText}`;
                                 
                                 if (!groups[signature]) {
                                     groups[signature] = [];
                                 }
                                 
-                                // Use the isMainContent function
-                                if (window.isMainContent && typeof window.isMainContent === 'function') {
-                                    if (window.isMainContent(el)) {
-                                        groups[signature].push({
-                                            index,
-                                            method: 'repeatedStructure',
-                                            confidence: 0.7
-                                        });
-                                    }
-                                } else {
-                                    // Fallback if function not available
-                                    groups[signature].push({
-                                        index,
-                                        method: 'repeatedStructure',
-                                        confidence: 0.7
-                                    });
-                                }
+                                groups[signature].push({
+                                    index,
+                                    method: 'repeatedStructure',
+                                    confidence: window.getArticleConfidence(el)
+                                });
                             }
                         });
                         
                         // Only consider groups with multiple similar elements (likely listings)
                         let results = [];
                         Object.values(groups).forEach(group => {
-                            if (group.length >= 3) {
+                            if (group.length >= 2) {
                                 results = results.concat(group);
                             }
                         });
@@ -223,35 +225,6 @@ Actor.main(async () => {
                     }
                 );
                 log.info(`Found ${repeatedStructures.length} repeated structures`);
-                
-                // Inject the isMainContent function into the page
-                await page.evaluate(() => {
-                    window.isMainContent = function(element) {
-                        // Check if element is likely part of a sidebar, header, footer, or navigation
-                        const isLikelySidebar = 
-                            element.closest('[class*="sidebar"], [id*="sidebar"], [class*="widget"], [class*="related"], [class*="latest"]') !== null ||
-                            element.closest('[class*="footer"], [id*="footer"], [class*="header"], [id*="header"]') !== null ||
-                            element.closest('nav, [role="navigation"]') !== null;
-                        
-                        // Check if element is likely a main content area
-                        const isLikelyMainContent = 
-                            element.closest('main, [role="main"], [id*="content"], [class*="content"], [id*="main"], [class*="main"], article') !== null;
-                        
-                        // Check if element has significant content
-                        const hasSignificantContent = 
-                            element.textContent.length > 150 && 
-                            element.querySelectorAll('h1, h2, h3, h4, p').length > 1;
-                        
-                        // For search results, prioritize elements with dates and relevant content
-                        const hasDateAndRelevance = 
-                            (element.querySelector('[class*="date"], time, [datetime]') !== null) && 
-                            element.textContent.toLowerCase().includes('oil') || 
-                            element.textContent.toLowerCase().includes('energy') || 
-                            element.textContent.toLowerCase().includes('news');
-                        
-                        return ((!isLikelySidebar || isLikelyMainContent) && hasSignificantContent) || hasDateAndRelevance;
-                    };
-                });
                 
                 // Combine all detected articles and remove duplicates
                 const allDetectedElements = [];
@@ -458,15 +431,23 @@ Actor.main(async () => {
                 // Sort by confidence and remove duplicates
                 const uniqueArticles = [];
                 const seenLinks = new Set();
+                const seenTitles = new Set();
                 
                 // Sort by confidence (highest first)
                 allDetectedElements.sort((a, b) => b.confidence.overall - a.confidence.overall);
                 
-                // Remove duplicates based on link
+                // Remove duplicates based on link or title
                 for (const article of allDetectedElements) {
-                    if (!seenLinks.has(article.link)) {
+                    // Normalize link by removing trailing slashes and query parameters
+                    const normalizedLink = article.link.replace(/\/$/, '').split('?')[0];
+                    
+                    // Normalize title by removing extra whitespace and converting to lowercase
+                    const normalizedTitle = article.title.toLowerCase().replace(/\s+/g, ' ').trim();
+                    
+                    if (!seenLinks.has(normalizedLink) && !seenTitles.has(normalizedTitle)) {
                         uniqueArticles.push(article);
-                        seenLinks.add(article.link);
+                        seenLinks.add(normalizedLink);
+                        seenTitles.add(normalizedTitle);
                         
                         // Stop if we've reached the maximum
                         if (maxItems > 0 && uniqueArticles.length >= maxItems) {
