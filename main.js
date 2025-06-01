@@ -1,9 +1,10 @@
 /**
- * Universal News Scraper Actor with Anti-Blocking Measures and Post-Filtering
+ * Universal News Scraper Actor with Anti-Blocking Measures and Enhanced Extraction
  * 
  * This actor scrapes news items from various dynamic news sites,
  * automatically detecting and extracting title, link, date, and summary.
  * Includes proxy rotation, user-agent rotation, and strict post-filtering.
+ * Special handling for alarabiya.net and other complex news sites.
  */
 
 const { Actor } = require('apify');
@@ -157,13 +158,51 @@ Actor.main(async () => {
                 // Special handling for alarabiya.net
                 let alarabiyaResults = [];
                 if (pageUrl.includes('alarabiya.net')) {
-                    // Target the specific search result cards
-                    const searchResultCards = Array.from(document.querySelectorAll('.search-result-card, .search-result, .card, article'));
+                    // For alarabiya.net, we need to target the search result cards specifically
+                    // These are typically article cards with a title, date, and category
                     
+                    // First, try to find all search result cards
+                    const searchResultCards = Array.from(document.querySelectorAll('article, .card, [class*="card"], [class*="article"], [class*="search-result"]'));
+                    
+                    // If we didn't find any with the above selectors, try a more general approach
+                    if (searchResultCards.length === 0) {
+                        // Look for any container that has a news title and date
+                        const allContainers = Array.from(document.querySelectorAll('div, section, article'));
+                        
+                        // Filter to those that look like news items
+                        const newsContainers = allContainers.filter(container => {
+                            // Must have a title-like element
+                            const hasTitle = container.querySelector('h1, h2, h3, h4, h5, h6, a') !== null;
+                            
+                            // Must have a date-like element or text
+                            const hasDate = container.textContent.includes('ago') || 
+                                           container.textContent.includes('May') ||
+                                           container.textContent.includes('April') ||
+                                           container.textContent.includes('March') ||
+                                           container.textContent.includes('day') ||
+                                           container.querySelector('[class*="date"], [class*="time"], time') !== null;
+                            
+                            // Must have a link
+                            const hasLink = container.querySelector('a') !== null;
+                            
+                            // Must have substantial content
+                            const hasContent = container.textContent.trim().length > 50;
+                            
+                            // Must not be a navigation element
+                            const notNavigation = !container.closest('nav, header, footer');
+                            
+                            return hasTitle && hasDate && hasLink && hasContent && notNavigation;
+                        });
+                        
+                        // Add these to our search result cards
+                        searchResultCards.push(...newsContainers);
+                    }
+                    
+                    // Process each search result card
                     alarabiyaResults = searchResultCards
                         .filter(card => {
                             // Make sure it has a title and is not a cookie banner or navigation
-                            return card.textContent.trim().length > 100 && 
+                            return card.textContent.trim().length > 50 && 
                                    !card.textContent.includes('cookies') &&
                                    !card.textContent.includes('Accept') &&
                                    card.querySelector('a') !== null;
@@ -172,6 +211,7 @@ Actor.main(async () => {
                             // Extract title
                             let title = '';
                             let titleElement = card.querySelector('h1, h2, h3, h4, h5, h6');
+                            
                             if (titleElement) {
                                 title = cleanText(titleElement.textContent);
                             } else {
@@ -208,13 +248,16 @@ Actor.main(async () => {
                                 date = cleanText(dateElements[0].textContent);
                             } else {
                                 // Look for text that might be a date
-                                const spans = Array.from(card.querySelectorAll('span'));
+                                const spans = Array.from(card.querySelectorAll('span, div'));
                                 for (const span of spans) {
                                     const text = span.textContent.trim();
                                     if (text.includes('ago') || 
                                         text.includes('day') || 
                                         text.includes('hour') || 
                                         text.includes('min') ||
+                                        text.includes('May') ||
+                                        text.includes('April') ||
+                                        text.includes('March') ||
                                         /\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(text)) {
                                         date = cleanText(text);
                                         break;
@@ -227,18 +270,35 @@ Actor.main(async () => {
                             const categoryElements = card.querySelectorAll('[class*="category"], [class*="section"]');
                             if (categoryElements.length > 0) {
                                 category = cleanText(categoryElements[0].textContent);
+                            } else {
+                                // Try to find category text
+                                const smallTexts = Array.from(card.querySelectorAll('span, small, div'))
+                                    .filter(el => el.textContent.trim().length < 30)
+                                    .map(el => el.textContent.trim());
+                                
+                                // Look for common category names
+                                const categoryNames = ['News', 'Business', 'Sports', 'Entertainment', 'Politics', 
+                                                      'Technology', 'Science', 'Health', 'Opinion', 'World', 
+                                                      'Middle East', 'US News', 'Saudi Arabia'];
+                                
+                                for (const text of smallTexts) {
+                                    if (categoryNames.some(cat => text.includes(cat))) {
+                                        category = text;
+                                        break;
+                                    }
+                                }
                             }
                             
                             // For alarabiya, we don't extract summaries as they're not consistently available
-                            // Just return an empty string for summary
+                            // Just use the category as a summary if available
+                            let summary = category || '';
                             
                             return {
                                 element: card,
                                 title,
                                 link,
                                 date,
-                                category,
-                                summary: '',
+                                summary,
                                 method: 'alarabiya'
                             };
                         });
@@ -780,13 +840,8 @@ Actor.main(async () => {
     function isLikelyNewsArticle(article) {
         // Skip navigation links, section pages, and utility pages
         const navigationPatterns = [
-            '/tools', '/about', '/contact', '/privacy', '/terms', 
-            '/subscribe', '/newsletter', '/rss', '/feed', '/search',
-            '/business', '/economy', '/politics', '/sports', '/lifestyle',
-            '/entertainment', '/technology', '/science', '/health',
-            '/opinion', '/video', '/audio', '/podcast', '/gallery',
-            '/category', '/section', '/tag', '/topic', '/author',
-            '/archive', '/sitemap', '/help', '/faq', '/support',
+            '/about', '/contact', '/privacy', '/terms', 
+            '/subscribe', '/newsletter', '/rss', '/feed',
             '/login', '/register', '/account', '/profile', '/settings'
         ];
 
@@ -823,6 +878,38 @@ Actor.main(async () => {
             'Energy', 'Oil', 'Gas', 'Aviation', 'Transport'
         ];
 
+        // Special case for alarabiya.net
+        if (article.link.includes('alarabiya.net')) {
+            // For alarabiya.net, we want to keep all articles that have a proper link structure
+            // These typically include a section name followed by a specific article path
+            
+            // Check if the link contains a news section pattern
+            const hasNewsSection = article.link.includes('/News/') || 
+                                  article.link.includes('/Views/') ||
+                                  article.link.includes('/Business/') ||
+                                  article.link.includes('/sports/') ||
+                                  article.link.includes('/lifestyle/');
+            
+            if (hasNewsSection) {
+                return true;
+            }
+            
+            // Check if the title looks like a news headline
+            if (article.title.length > 30 && article.title.split(' ').length > 5) {
+                return true;
+            }
+            
+            // Check if it has a date
+            if (article.date && (
+                article.date.includes('days ago') || 
+                article.date.includes('May') || 
+                article.date.includes('April') || 
+                article.date.includes('March'))) {
+                return true;
+            }
+        }
+
+        // For other sites, apply standard checks
         for (const category of categoryNames) {
             if (article.title === category) {
                 return false;
@@ -881,18 +968,6 @@ Actor.main(async () => {
         if (article.title.includes('"') || article.title.includes("'") || 
             article.title.includes('"') || article.title.includes("'")) {
             return true;
-        }
-
-        // For alarabiya.net specifically, apply additional checks
-        if (article.link.includes('alarabiya.net')) {
-            // Check if the link contains a news section pattern
-            const hasNewsSection = article.link.includes('/News/') || 
-                                  article.link.includes('/Views/') ||
-                                  article.link.includes('/Business/');
-            
-            if (hasNewsSection) {
-                return true;
-            }
         }
 
         // Default to false for anything that doesn't match the above criteria
