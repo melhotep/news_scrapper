@@ -18,7 +18,7 @@ Actor.main(async () => {
         throw new Error('Input must contain a "url" field!');
     }
 
-    const { url, maxItems = 0, waitTime = 30 } = input; // Increased default wait time
+    const { url, maxItems = 0, waitTime = 30 } = input;
     console.log(`Starting adaptive scraper for URL: ${url}`);
     console.log(`Maximum items to extract: ${maxItems || 'unlimited'}`);
     console.log(`Wait time for dynamic content: ${waitTime} seconds`);
@@ -49,290 +49,306 @@ Actor.main(async () => {
                 log.info(`Waiting ${waitTime} seconds for dynamic content to load...`);
                 await page.waitForTimeout(waitTime * 1000);
 
-                // Take a screenshot for debugging
-                await page.screenshot({ path: 'screenshot.jpg', fullPage: true });
-                log.info('Took screenshot for debugging');
-
                 // Get the HTML content of the page
                 const html = await page.content();
-                
-                // Save HTML for debugging
-                await Actor.setValue('page-html', html);
-                log.info('Saved HTML content for debugging');
                 
                 // Debug: Log the page title
                 const pageTitle = await page.title();
                 log.info(`Page title: ${pageTitle}`);
 
-                // Debug: Check if we're on a search results page
-                const isSearchPage = await page.evaluate(() => {
-                    return document.body.textContent.includes('Search Results');
-                });
-                log.info(`Is search page: ${isSearchPage}`);
-
-                // Debug: Check for specific Al Jazeera elements
-                const hasSearchResults = await page.evaluate(() => {
-                    return !!document.querySelector('.gc__content-container');
-                });
-                log.info(`Has search results container: ${hasSearchResults}`);
-
-                // First approach: Look specifically for Al Jazeera search results
-                log.info('Detecting article elements using Al Jazeera specific selectors...');
+                // ADAPTIVE APPROACH: Detect article elements using multiple strategies
+                log.info('Detecting article elements using adaptive strategies...');
                 
-                // Debug: Count all potential article containers
-                const articleCount = await page.evaluate(() => {
-                    const containers = [
-                        document.querySelectorAll('.gc__content-container article').length,
-                        document.querySelectorAll('.gc__content-container .gc__header-wrap').length,
-                        document.querySelectorAll('.gc__content').length
-                    ];
-                    return JSON.stringify(containers);
-                });
-                log.info(`Article container counts: ${articleCount}`);
-                
-                // Try to extract using Al Jazeera specific selectors
-                const articles = await page.$$eval('.gc__content-container article, .gc__content', 
+                // Strategy 1: Look for semantic HTML elements
+                const semanticArticles = await page.$$eval('article, .article, [class*="article"], [class*="post"], [class*="news-item"], [class*="story"]', 
                     (elements) => {
-                        console.log(`Found ${elements.length} elements with specific selectors`);
                         return elements.map((el, index) => {
                             return {
-                                element: index,
-                                method: 'alJazeeraSpecific',
-                                confidence: 0.9,
-                                selector: `.gc__content-container article:nth-child(${index + 1}), .gc__content:nth-child(${index + 1})`
+                                element: el,
+                                index,
+                                method: 'semanticHTML',
+                                confidence: 0.9
                             };
                         });
                     }
                 );
+                log.info(`Found ${semanticArticles.length} semantic HTML elements`);
                 
-                log.info(`Detected ${articles.length} potential article elements`);
-                
-                // Extract data from each article
-                const newsItems = [];
-                const baseUrl = request.url;
-                
-                // Process each detected article
-                for (let i = 0; i < articles.length; i++) {
-                    if (maxItems > 0 && newsItems.length >= maxItems) {
-                        break;
-                    }
-                    
-                    const article = articles[i];
-                    log.info(`Extracting data from article ${i+1}/${articles.length}`);
-                    
-                    // Debug: Log the article element's HTML
-                    const articleHtml = await page.evaluate((index) => {
-                        const elements = document.querySelectorAll('.gc__content-container article, .gc__content');
-                        return elements[index] ? elements[index].outerHTML : 'Element not found';
-                    }, i);
-                    log.info(`Article ${i+1} HTML structure: ${articleHtml.substring(0, 100)}...`);
-                    
-                    // Extract data with detailed logging
-                    const articleData = await page.evaluate((index) => {
-                        // Find the article element
-                        const elements = document.querySelectorAll('.gc__content-container article, .gc__content');
-                        const element = elements[index];
-                        
-                        if (!element) {
-                            console.log('Element not found');
-                            return null;
-                        }
-                        
-                        // Debug logs
-                        const debugInfo = {};
-                        
-                        // Extract title and link
-                        const titleElement = element.querySelector('.gc__title-link, .gc__title a');
-                        debugInfo.titleElementFound = !!titleElement;
-                        debugInfo.titleElementTag = titleElement ? titleElement.tagName : 'N/A';
-                        debugInfo.titleElementClasses = titleElement ? titleElement.className : 'N/A';
-                        
-                        const title = titleElement ? titleElement.textContent.trim() : null;
-                        debugInfo.titleText = title;
-                        
-                        const link = titleElement && titleElement.href ? titleElement.href : null;
-                        debugInfo.linkHref = link;
-                        
-                        // Extract date
-                        const dateElement = element.querySelector('.gc__date, .gc__iab-wrap time');
-                        debugInfo.dateElementFound = !!dateElement;
-                        debugInfo.dateElementTag = dateElement ? dateElement.tagName : 'N/A';
-                        debugInfo.dateElementClasses = dateElement ? dateElement.className : 'N/A';
-                        
-                        const date = dateElement ? dateElement.textContent.trim() : null;
-                        debugInfo.dateText = date;
-                        
-                        // Extract summary
-                        const summaryElement = element.querySelector('.gc__excerpt, .gc__body-wrap');
-                        debugInfo.summaryElementFound = !!summaryElement;
-                        debugInfo.summaryElementTag = summaryElement ? summaryElement.tagName : 'N/A';
-                        debugInfo.summaryElementClasses = summaryElement ? summaryElement.className : 'N/A';
-                        
-                        const summary = summaryElement ? summaryElement.textContent.trim() : null;
-                        debugInfo.summaryText = summary;
-                        
-                        console.log('Debug info:', JSON.stringify(debugInfo));
-                        
-                        return {
-                            title,
-                            link,
-                            date,
-                            summary,
-                            debugInfo,
-                            confidence: {
-                                title: title ? 0.9 : 0,
-                                link: link ? 0.9 : 0,
-                                date: date ? 0.8 : 0,
-                                summary: summary ? 0.8 : 0,
-                                overall: title && link ? 0.85 : 0.5
-                            },
-                            methods: {
-                                title: 'alJazeeraSpecific',
-                                link: 'alJazeeraSpecific',
-                                date: 'alJazeeraSpecific',
-                                summary: 'alJazeeraSpecific'
-                            }
-                        };
-                    }, i);
-                    
-                    // Log debug info
-                    if (articleData) {
-                        log.info(`Article ${i+1} debug info: ${JSON.stringify(articleData.debugInfo)}`);
-                        
-                        // Only add if we have at least a title and link
-                        if (articleData.title && articleData.link) {
-                            delete articleData.debugInfo; // Remove debug info before saving
-                            newsItems.push(articleData);
-                            methodsUsed.add('alJazeeraSpecific');
-                            log.info(`Successfully extracted article: ${articleData.title}`);
-                        } else {
-                            log.info(`Failed to extract required fields for article ${i+1}`);
-                        }
-                    } else {
-                        log.info(`No data extracted for article ${i+1}`);
-                    }
-                }
-                
-                // If no articles were detected or extracted, try a more generic approach
-                if (newsItems.length === 0) {
-                    log.info('No articles detected with primary method, trying alternative approach...');
-                    
-                    // Try to find any elements that look like news items
-                    const genericArticles = await page.$$eval('div.gc__content-container > div, .search-result, .search-results > div', 
-                        (elements) => {
-                            console.log(`Found ${elements.length} elements with generic selectors`);
-                            return elements.map((el, index) => {
+                // Strategy 2: Look for content containers with specific patterns
+                const contentContainers = await page.$$eval('div[class*="content"] > div, div[class*="search-result"], div[class*="listing"] > div, div[class*="feed"] > div', 
+                    (elements) => {
+                        return elements.map((el, index) => {
+                            // Only consider elements with substantial content
+                            if (el.textContent.length > 100 && el.querySelectorAll('a, h1, h2, h3, h4, p').length > 0) {
                                 return {
-                                    element: index,
-                                    method: 'genericSelector',
-                                    confidence: 0.7,
-                                    selector: `div:nth-child(${index + 1})`
+                                    element: el,
+                                    index,
+                                    method: 'contentPattern',
+                                    confidence: 0.8
                                 };
-                            });
-                        }
-                    );
-                    
-                    log.info(`Detected ${genericArticles.length} potential generic elements`);
-                    
-                    // Process each generic element
-                    for (let i = 0; i < genericArticles.length; i++) {
-                        if (maxItems > 0 && newsItems.length >= maxItems) {
-                            break;
-                        }
+                            }
+                            return null;
+                        }).filter(item => item !== null);
+                    }
+                );
+                log.info(`Found ${contentContainers.length} content containers`);
+                
+                // Strategy 3: Look for repeated structures (common in listings)
+                const repeatedStructures = await page.$$eval('div > div, section > div, main > div', 
+                    (elements) => {
+                        // Group similar elements by structure
+                        const groups = {};
                         
-                        const article = genericArticles[i];
-                        log.info(`Extracting data from generic element ${i+1}/${genericArticles.length}`);
+                        elements.forEach((el, index) => {
+                            // Create a simple signature based on element structure
+                            const hasHeading = el.querySelector('h1, h2, h3, h4, h5, h6') !== null;
+                            const hasLink = el.querySelector('a') !== null;
+                            const hasImage = el.querySelector('img') !== null;
+                            const hasText = el.textContent.trim().length > 100;
+                            
+                            if (hasHeading && hasLink && hasText) {
+                                const signature = `${hasHeading}-${hasLink}-${hasImage}-${hasText}`;
+                                
+                                if (!groups[signature]) {
+                                    groups[signature] = [];
+                                }
+                                
+                                groups[signature].push({
+                                    element: el,
+                                    index,
+                                    method: 'repeatedStructure',
+                                    confidence: 0.7
+                                });
+                            }
+                        });
                         
-                        // Extract data using generic selectors
-                        const articleData = await page.evaluate((index) => {
-                            // Find the element
-                            const elements = document.querySelectorAll('div.gc__content-container > div, .search-result, .search-results > div');
-                            const element = elements[index];
+                        // Only consider groups with multiple similar elements (likely listings)
+                        let results = [];
+                        Object.values(groups).forEach(group => {
+                            if (group.length >= 3) {
+                                results = results.concat(group);
+                            }
+                        });
+                        
+                        return results;
+                    }
+                );
+                log.info(`Found ${repeatedStructures.length} repeated structures`);
+                
+                // Combine all detected articles and remove duplicates
+                const allDetectedElements = await page.evaluate(() => {
+                    // This will be populated by the detection strategies
+                    return [];
+                });
+                
+                // Process each detection strategy and add to allDetectedElements
+                for (const strategy of ['semanticHTML', 'contentPattern', 'repeatedStructure']) {
+                    let elements;
+                    
+                    if (strategy === 'semanticHTML') {
+                        elements = semanticArticles;
+                    } else if (strategy === 'contentPattern') {
+                        elements = contentContainers;
+                    } else {
+                        elements = repeatedStructures;
+                    }
+                    
+                    // Add elements from this strategy
+                    for (let i = 0; i < elements.length; i++) {
+                        const element = elements[i];
+                        
+                        // Extract data using adaptive selectors
+                        const articleData = await page.evaluate((index, strategy) => {
+                            let element;
+                            
+                            // Find the element based on strategy
+                            if (strategy === 'semanticHTML') {
+                                const elements = document.querySelectorAll('article, .article, [class*="article"], [class*="post"], [class*="news-item"], [class*="story"]');
+                                element = elements[index];
+                            } else if (strategy === 'contentPattern') {
+                                const elements = document.querySelectorAll('div[class*="content"] > div, div[class*="search-result"], div[class*="listing"] > div, div[class*="feed"] > div');
+                                let validElements = [];
+                                for (const el of elements) {
+                                    if (el.textContent.length > 100 && el.querySelectorAll('a, h1, h2, h3, h4, p').length > 0) {
+                                        validElements.push(el);
+                                    }
+                                }
+                                element = validElements[index];
+                            } else {
+                                // For repeatedStructure, we need to recalculate the groups
+                                const elements = document.querySelectorAll('div > div, section > div, main > div');
+                                let validElements = [];
+                                for (const el of elements) {
+                                    const hasHeading = el.querySelector('h1, h2, h3, h4, h5, h6') !== null;
+                                    const hasLink = el.querySelector('a') !== null;
+                                    const hasText = el.textContent.trim().length > 100;
+                                    
+                                    if (hasHeading && hasLink && hasText) {
+                                        validElements.push(el);
+                                    }
+                                }
+                                element = validElements[index];
+                            }
                             
                             if (!element) return null;
                             
-                            // Debug logs
-                            const debugInfo = {};
+                            // ADAPTIVE EXTRACTION: Try multiple selectors for each field
                             
-                            // Extract title and link
-                            const titleElement = element.querySelector('a, h1, h2, h3, h4, [class*="title"], [class*="headline"]');
-                            debugInfo.titleElementFound = !!titleElement;
-                            debugInfo.titleElementTag = titleElement ? titleElement.tagName : 'N/A';
-                            debugInfo.titleElementClasses = titleElement ? titleElement.className : 'N/A';
+                            // Title extraction
+                            let title = null;
+                            let titleElement = null;
                             
-                            const title = titleElement ? titleElement.textContent.trim() : null;
-                            debugInfo.titleText = title;
+                            // Try multiple selectors for title
+                            const titleSelectors = [
+                                'h1, h2, h3, h4', // Headings
+                                'a[class*="title"], a[class*="headline"], a[class*="heading"]', // Classed anchors
+                                'a:has(h1), a:has(h2), a:has(h3), a:has(h4)', // Anchors with headings
+                                'a', // Any anchor (last resort)
+                                '[class*="title"], [class*="headline"], [class*="heading"]' // Elements with title-like classes
+                            ];
                             
-                            const link = titleElement && titleElement.href ? titleElement.href : null;
-                            debugInfo.linkHref = link;
+                            for (const selector of titleSelectors) {
+                                titleElement = element.querySelector(selector);
+                                if (titleElement) {
+                                    title = titleElement.textContent.trim();
+                                    if (title && title.length > 5) break;
+                                }
+                            }
                             
-                            // Extract date
-                            const dateElement = element.querySelector('time, [class*="date"], [class*="time"]');
-                            debugInfo.dateElementFound = !!dateElement;
-                            debugInfo.dateElementTag = dateElement ? dateElement.tagName : 'N/A';
-                            debugInfo.dateElementClasses = dateElement ? dateElement.className : 'N/A';
+                            // Link extraction
+                            let link = null;
                             
-                            const date = dateElement ? dateElement.textContent.trim() : null;
-                            debugInfo.dateText = date;
+                            // If title element is or contains an anchor, use its href
+                            if (titleElement) {
+                                if (titleElement.tagName === 'A') {
+                                    link = titleElement.href;
+                                } else {
+                                    const anchorInTitle = titleElement.querySelector('a');
+                                    if (anchorInTitle) {
+                                        link = anchorInTitle.href;
+                                    }
+                                }
+                            }
                             
-                            // Extract summary
-                            const summaryElement = element.querySelector('p, [class*="summary"], [class*="excerpt"], [class*="description"]');
-                            debugInfo.summaryElementFound = !!summaryElement;
-                            debugInfo.summaryElementTag = summaryElement ? summaryElement.tagName : 'N/A';
-                            debugInfo.summaryElementClasses = summaryElement ? summaryElement.className : 'N/A';
+                            // If no link found yet, try other selectors
+                            if (!link) {
+                                const linkSelectors = [
+                                    'a[class*="link"], a[class*="read-more"]',
+                                    'a:has(img)',
+                                    'a'
+                                ];
+                                
+                                for (const selector of linkSelectors) {
+                                    const linkElement = element.querySelector(selector);
+                                    if (linkElement) {
+                                        link = linkElement.href;
+                                        if (link) break;
+                                    }
+                                }
+                            }
                             
-                            const summary = summaryElement ? summaryElement.textContent.trim() : null;
-                            debugInfo.summaryText = summary;
+                            // Date extraction
+                            let date = null;
                             
-                            console.log('Generic debug info:', JSON.stringify(debugInfo));
+                            const dateSelectors = [
+                                'time, [datetime]', // Semantic time elements
+                                '[class*="date"], [class*="time"], [class*="published"]', // Date classes
+                                'span:has([class*="date"]), div:has([class*="date"])' // Containers with date classes
+                            ];
+                            
+                            for (const selector of dateSelectors) {
+                                const dateElement = element.querySelector(selector);
+                                if (dateElement) {
+                                    // Try datetime attribute first
+                                    if (dateElement.getAttribute('datetime')) {
+                                        date = dateElement.getAttribute('datetime');
+                                    } else {
+                                        date = dateElement.textContent.trim();
+                                    }
+                                    if (date) break;
+                                }
+                            }
+                            
+                            // Summary extraction
+                            let summary = null;
+                            
+                            const summarySelectors = [
+                                '[class*="summary"], [class*="excerpt"], [class*="description"], [class*="teaser"]',
+                                'p',
+                                'div[class*="body"], div[class*="content"]'
+                            ];
+                            
+                            for (const selector of summarySelectors) {
+                                const summaryElement = element.querySelector(selector);
+                                if (summaryElement) {
+                                    summary = summaryElement.textContent.trim();
+                                    if (summary && summary.length > 20) break;
+                                }
+                            }
+                            
+                            // Calculate confidence scores
+                            const titleConfidence = title ? 0.9 : 0;
+                            const linkConfidence = link ? 0.9 : 0;
+                            const dateConfidence = date ? 0.8 : 0;
+                            const summaryConfidence = summary ? 0.8 : 0;
+                            const overallConfidence = (titleConfidence + linkConfidence + dateConfidence + summaryConfidence) / 4;
                             
                             return {
                                 title,
                                 link,
                                 date,
                                 summary,
-                                debugInfo,
                                 confidence: {
-                                    title: title ? 0.7 : 0,
-                                    link: link ? 0.7 : 0,
-                                    date: date ? 0.6 : 0,
-                                    summary: summary ? 0.6 : 0,
-                                    overall: title && link ? 0.65 : 0.4
+                                    title: titleConfidence,
+                                    link: linkConfidence,
+                                    date: dateConfidence,
+                                    summary: summaryConfidence,
+                                    overall: overallConfidence
                                 },
                                 methods: {
-                                    title: 'genericSelector',
-                                    link: 'genericSelector',
-                                    date: 'genericSelector',
-                                    summary: 'genericSelector'
+                                    title: strategy,
+                                    link: strategy,
+                                    date: strategy,
+                                    summary: strategy
                                 }
                             };
-                        }, i);
+                        }, i, strategy);
                         
-                        // Log debug info
-                        if (articleData) {
-                            log.info(`Generic element ${i+1} debug info: ${JSON.stringify(articleData.debugInfo)}`);
-                            
-                            // Only add if we have at least a title and link
-                            if (articleData.title && articleData.link) {
-                                delete articleData.debugInfo; // Remove debug info before saving
-                                newsItems.push(articleData);
-                                methodsUsed.add('genericSelector');
-                                log.info(`Successfully extracted generic element: ${articleData.title}`);
-                            } else {
-                                log.info(`Failed to extract required fields for generic element ${i+1}`);
-                            }
-                        } else {
-                            log.info(`No data extracted for generic element ${i+1}`);
+                        // Only add if we have at least a title and link
+                        if (articleData && articleData.title && articleData.link) {
+                            allDetectedElements.push(articleData);
+                            methodsUsed.add(strategy);
+                            log.info(`Successfully extracted article using ${strategy}: ${articleData.title}`);
+                        }
+                    }
+                }
+                
+                // Sort by confidence and remove duplicates
+                const uniqueArticles = [];
+                const seenLinks = new Set();
+                
+                // Sort by confidence (highest first)
+                allDetectedElements.sort((a, b) => b.confidence.overall - a.confidence.overall);
+                
+                // Remove duplicates based on link
+                for (const article of allDetectedElements) {
+                    if (!seenLinks.has(article.link)) {
+                        uniqueArticles.push(article);
+                        seenLinks.add(article.link);
+                        
+                        // Stop if we've reached the maximum
+                        if (maxItems > 0 && uniqueArticles.length >= maxItems) {
+                            break;
                         }
                     }
                 }
                 
                 // Log the number of extracted items
-                log.info(`Successfully extracted ${newsItems.length} news items`);
+                log.info(`Successfully extracted ${uniqueArticles.length} unique news items`);
                 
                 // Save the results to the dataset
-                await dataset.pushData(newsItems);
-                extractedCount += newsItems.length;
+                await dataset.pushData(uniqueArticles);
+                extractedCount += uniqueArticles.length;
 
                 // Check if we've reached the maximum number of items
                 if (maxItems > 0 && extractedCount >= maxItems) {
