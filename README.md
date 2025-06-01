@@ -1,133 +1,118 @@
-# Adaptive News Scraper Actor - README
+# Adaptive News Scraper Actor
 
-## Overview
-This is an adaptive Apify actor that scrapes news items from various dynamic news sites without requiring manual configuration for each site. It automatically detects and extracts the following information for each news item:
-- Title
-- Link
-- Date
-- Summary
+This Apify actor scrapes news items from various dynamic news sites, automatically detecting and extracting title, link, date, and summary for each news item without requiring manual configuration.
 
-## Key Features
+## Features
 
-- **Adaptive Detection**: Automatically identifies news articles across different site layouts
-- **Multiple Extraction Methods**: Uses various strategies with fallbacks to extract content
-- **Confidence Scoring**: Prioritizes the most reliable extraction methods
-- **Fallback Mechanisms**: Gracefully handles different site structures
-- **No Manual Configuration**: Works across multiple news sites without site-specific selectors
-
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/adaptive-news-scraper.git
-
-# Navigate to the project directory
-cd adaptive-news-scraper
-
-# Install dependencies
-npm install
-```
-
-## Usage
-
-### Local Development
-To run the actor locally:
-
-```bash
-# Run with default input
-npm start
-
-# Run with custom input
-APIFY_INPUT_JSON='{"url": "https://www.aljazeera.com/search/iraq%20oil?sort=date", "maxItems": 10, "waitTime": 15}' npm start
-
-# Run the test script (tests with sample URLs)
-node test.js
-```
-
-### Apify Platform
-1. Create a new actor on the Apify platform
-2. Upload the code or link your GitHub repository
-3. Set the input parameters:
-   - `url`: URL of the news site to scrape
-   - `maxItems`: Maximum number of news items to extract (0 for unlimited)
-   - `waitTime`: Time to wait for dynamic content to load (in seconds)
-4. Run the actor
+- **Universal Compatibility**: Works across various news sites without needing site-specific selectors
+- **Intelligent Detection**: Uses multiple methods to identify news articles
+- **Robust Extraction**: Employs multiple strategies with fallbacks to extract each field
+- **Smart Features**: Uniqueness enforcement, confidence scoring, and detailed statistics
+- **Debugging Support**: Screenshot capture, HTML content saving, and detailed logging
 
 ## Input Parameters
 
-- **url** (required): The URL of the news site to scrape
-- **maxItems** (optional): Maximum number of news items to extract (0 for unlimited, default: 0)
-- **waitTime** (optional): Time to wait for dynamic content to load in seconds (default: 10)
+The actor accepts the following input parameters:
 
-## How It Works
-
-The actor uses a multi-layered approach to detect and extract news content:
-
-### 1. Article Detection Methods
-- **Semantic HTML Analysis**: Looks for semantic elements like `<article>`, `<section>`, `<main>`
-- **Class/ID Pattern Matching**: Searches for common news-related class/ID patterns
-- **DOM Structure Analysis**: Identifies repeated patterns that likely represent articles
-- **Content-Based Heuristics**: Uses content characteristics to identify news items
-- **Readability Integration**: Falls back to Mozilla's Readability for single-article pages
-
-### 2. Content Extraction Methods
-For each detected article, the actor extracts content using multiple strategies:
-
-- **Title Extraction**: Heading elements, class patterns, anchor text, metadata
-- **Link Extraction**: Anchor tags, canonical links, metadata
-- **Date Extraction**: Time elements, datetime attributes, class patterns, regex patterns
-- **Summary Extraction**: Class patterns, meta descriptions, first paragraphs
-
-### 3. Confidence Scoring
-Each extraction method is assigned a confidence score, and the actor prioritizes results with higher confidence.
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `url` | String | **Required**. URL of the news site to scrape |
+| `maxItems` | Number | Maximum number of items to extract (0 for unlimited) |
+| `waitTime` | Number | Wait time in seconds for dynamic content to load (default: 30) |
 
 ## Output Format
 
-The actor outputs data in JSON format:
+The actor outputs a JSON object with the following structure:
 
 ```json
 {
   "newsItems": [
     {
-      "title": "Example News Title",
-      "link": "https://example.com/news/article",
-      "date": "2025-06-01",
-      "summary": "This is an example summary of the news article..."
-    },
-    ...
+      "title": "Article title",
+      "link": "https://example.com/article",
+      "date": "Publication date",
+      "summary": "Article summary or excerpt",
+      "confidence": {
+        "title": 0.9,
+        "link": 0.9,
+        "date": 0.8,
+        "summary": 0.8,
+        "overall": 0.85
+      },
+      "methods": {
+        "title": "direct",
+        "link": "direct",
+        "date": "direct",
+        "summary": "direct"
+      }
+    }
   ],
   "totalCount": 10,
   "url": "https://example.com/news",
   "extractionStats": {
-    "methodsUsed": ["semanticHTML", "classPatterns", "domStructure"],
-    "successRate": 0.85
+    "methodsUsed": ["direct"],
+    "successRate": 0.8,
+    "completeItems": 8,
+    "partialItems": 2
   }
 }
 ```
 
-## Supported News Sites
+## Usage
 
-The actor is designed to work with a wide variety of news sites without manual configuration. It has been tested with:
+### Running on Apify Platform
 
-- Al Jazeera
-- BBC News
-- CNN
-- Reuters
-- The Guardian
-- The New York Times
-- And many more...
+1. Create a new actor on the Apify platform
+2. Set the source to your GitHub repository
+3. Add a Dockerfile with the following content:
 
-## Limitations
+```dockerfile
+FROM apify/actor-node-playwright:20
 
-- The actor does not handle pagination by default
-- No authentication support
-- Date formats may vary depending on the source site
-- Extraction quality may vary across different site layouts
+# Copy all files from the actor directory
+COPY . ./
 
-## Customization
+# Install all dependencies and build the code
+RUN npm install --quiet --only=prod --no-optional
 
-While the actor is designed to work without manual configuration, you can enhance its performance for specific sites by modifying the detection and extraction patterns in:
+# Run the actor
+CMD ["node", "main.js"]
+```
 
-- `lib/article-detector.js`: Article detection algorithms
-- `lib/content-extractor.js`: Content extraction methods
-- `lib/utils.js`: Utility functions and patterns
+4. Build the actor
+5. Run the actor with the following input:
+
+```json
+{
+  "url": "https://example.com/news",
+  "maxItems": 10,
+  "waitTime": 30
+}
+```
+
+### Running Locally
+
+1. Clone the repository
+2. Install dependencies: `npm install`
+3. Run the actor: `node main.js`
+
+## How It Works
+
+The actor uses a sophisticated approach to extract news items:
+
+1. **Page Loading**: Waits for the page to load completely, including dynamic content
+2. **Article Detection**: Uses multiple strategies to identify news article elements
+3. **Data Extraction**: Extracts title, link, date, and summary using various methods
+4. **Result Processing**: Ensures uniqueness, calculates confidence scores, and provides statistics
+
+## Troubleshooting
+
+If the actor is not extracting news items from a particular site:
+
+1. Increase the `waitTime` parameter to allow more time for dynamic content to load
+2. Check the debug artifacts (screenshot and HTML) in the Key-Value store
+3. Review the extraction statistics in the output to identify which methods were used
+
+## License
+
+ISC
