@@ -59,7 +59,7 @@ Actor.main(async () => {
             await Actor.setValue('html', await page.content());
             log.info('HTML content saved');
 
-            // Direct approach: Find all article-like elements
+            // Extract articles using multiple approaches directly in browser context
             const articleElements = await page.evaluate(() => {
                 // Helper function to check if an element is likely a search result
                 const isLikelySearchResult = (element) => {
@@ -80,7 +80,7 @@ Actor.main(async () => {
                 };
                 
                 // Find all potential article elements in the main content area
-                const allArticleLikeElements = Array.from(document.querySelectorAll('article, div > h2, div > h3'))
+                const allArticleLikeElements = Array.from(document.querySelectorAll('article, div > h2, div > h3, .search-result, .result-item, .news-item'))
                     .filter(el => {
                         // For heading elements, get their parent
                         if (el.tagName === 'H2' || el.tagName === 'H3') {
@@ -96,8 +96,17 @@ Actor.main(async () => {
                         return el;
                     });
                 
+                // Special case for flat search results (like africanreview.com)
+                // Look for h3 elements with links that are likely search results
+                const flatSearchResults = Array.from(document.querySelectorAll('h3 > a, h3 a'))
+                    .map(link => link.closest('h3').parentElement)
+                    .filter(el => el && el.textContent.trim().length > 100);
+                
+                // Combine all potential article elements
+                const combinedElements = [...allArticleLikeElements, ...flatSearchResults];
+                
                 // Extract data from each potential article
-                const results = allArticleLikeElements.map(element => {
+                const results = combinedElements.map(element => {
                     // Extract title
                     let title = null;
                     let titleElement = null;
@@ -168,6 +177,25 @@ Actor.main(async () => {
                         }
                     }
                     
+                    // Try to find date in text content (common pattern: DD Month YYYY)
+                    if (!date) {
+                        // Get all text nodes directly under the element
+                        const textNodes = Array.from(element.childNodes)
+                            .filter(node => node.nodeType === Node.TEXT_NODE)
+                            .map(node => node.textContent.trim())
+                            .filter(text => text.length > 0);
+                        
+                        // Look for date patterns in text nodes
+                        for (const text of textNodes) {
+                            // Match patterns like "25 October 2010" or "18 April 2022"
+                            const dateMatch = text.match(/\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}/i);
+                            if (dateMatch) {
+                                date = dateMatch[0];
+                                break;
+                            }
+                        }
+                    }
+                    
                     // Extract summary
                     let summary = null;
                     
@@ -182,6 +210,29 @@ Actor.main(async () => {
                         const paragraphs = element.querySelectorAll('p');
                         if (paragraphs.length > 0) {
                             summary = paragraphs[0].textContent.trim();
+                        }
+                    }
+                    
+                    // If still no summary, try to extract text after the title/date
+                    if (!summary && titleElement) {
+                        // Get all text content
+                        const fullText = element.textContent;
+                        
+                        // Remove the title text
+                        let remainingText = fullText.replace(title, '');
+                        
+                        // Remove the date if found
+                        if (date) {
+                            remainingText = remainingText.replace(date, '');
+                        }
+                        
+                        // Clean up and use as summary
+                        summary = remainingText.trim()
+                            .replace(/\s+/g, ' ')  // Replace multiple spaces with single space
+                            .substring(0, 300);    // Limit length
+                        
+                        if (summary.length < 20) {
+                            summary = null;  // Too short to be meaningful
                         }
                     }
                     
