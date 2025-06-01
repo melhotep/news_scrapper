@@ -6,15 +6,15 @@
  * for each news item without requiring manual configuration.
  */
 
-const Apify = require('apify');
+const { Actor } = require('apify');
 const { PlaywrightCrawler, Dataset } = require('crawlee');
 const { detectArticles } = require('./lib/article-detector');
 const { extractArticleData, extractWithReadability } = require('./lib/content-extractor');
 
-// Initialize the Apify SDK
-Apify.main(async () => {
+// Initialize the Actor
+Actor.main(async () => {
     // Get input from the user
-    const input = await Apify.getInput();
+    const input = await Actor.getInput();
     console.log('Input:', input);
 
     if (!input || !input.url) {
@@ -166,6 +166,6 @@ Apify.main(async () => {
     };
 
     // Store the output
-    await Apify.pushData(output);
+    await Actor.pushData(output);
     console.log('Scraping finished successfully!');
 });
