@@ -64,7 +64,6 @@ Actor.main(async () => {
                     (elements) => {
                         return elements.map((el, index) => {
                             return {
-                                element: el,
                                 index,
                                 method: 'semanticHTML',
                                 confidence: 0.9
@@ -81,7 +80,6 @@ Actor.main(async () => {
                             // Only consider elements with substantial content
                             if (el.textContent.length > 100 && el.querySelectorAll('a, h1, h2, h3, h4, p').length > 0) {
                                 return {
-                                    element: el,
                                     index,
                                     method: 'contentPattern',
                                     confidence: 0.8
@@ -114,7 +112,6 @@ Actor.main(async () => {
                                 }
                                 
                                 groups[signature].push({
-                                    element: el,
                                     index,
                                     method: 'repeatedStructure',
                                     confidence: 0.7
@@ -136,10 +133,7 @@ Actor.main(async () => {
                 log.info(`Found ${repeatedStructures.length} repeated structures`);
                 
                 // Combine all detected articles and remove duplicates
-                const allDetectedElements = await page.evaluate(() => {
-                    // This will be populated by the detection strategies
-                    return [];
-                });
+                const allDetectedElements = [];
                 
                 // Process each detection strategy and add to allDetectedElements
                 for (const strategy of ['semanticHTML', 'contentPattern', 'repeatedStructure']) {
@@ -158,7 +152,8 @@ Actor.main(async () => {
                         const element = elements[i];
                         
                         // Extract data using adaptive selectors
-                        const articleData = await page.evaluate((index, strategy) => {
+                        // FIXED: Wrap multiple arguments in a single object
+                        const articleData = await page.evaluate(({ index, strategy }) => {
                             let element;
                             
                             // Find the element based on strategy
@@ -312,7 +307,7 @@ Actor.main(async () => {
                                     summary: strategy
                                 }
                             };
-                        }, i, strategy);
+                        }, { index: element.index, strategy }); // FIXED: Wrapped arguments in a single object
                         
                         // Only add if we have at least a title and link
                         if (articleData && articleData.title && articleData.link) {
