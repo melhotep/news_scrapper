@@ -64,7 +64,7 @@ Actor.main(async () => {
                 // Helper function to check if an element is likely a search result
                 const isLikelySearchResult = (element) => {
                     // Check if it has a heading and link
-                    const hasHeading = element.querySelector('h1, h2, h3, h4') !== null;
+                    const hasHeading = element.querySelector('h1, h2, h3, h4, h5') !== null;
                     const hasLink = element.querySelector('a') !== null;
                     
                     // Check if it has substantial content
@@ -102,8 +102,20 @@ Actor.main(async () => {
                     .map(link => link.closest('h3').parentElement)
                     .filter(el => el && el.textContent.trim().length > 100);
                 
+                // Special case for table-based search results (like ahram.org.eg)
+                const tableSearchResults = Array.from(document.querySelectorAll('table tr, tbody tr'))
+                    .filter(tr => {
+                        // Check if the row has a title and content
+                        return tr.querySelector('h5 a, h5 > a') !== null && 
+                               tr.textContent.trim().length > 100;
+                    });
+                
                 // Combine all potential article elements
-                const combinedElements = [...allArticleLikeElements, ...flatSearchResults];
+                const combinedElements = [
+                    ...allArticleLikeElements, 
+                    ...flatSearchResults,
+                    ...tableSearchResults
+                ];
                 
                 // Extract data from each potential article
                 const results = combinedElements.map(element => {
@@ -111,8 +123,8 @@ Actor.main(async () => {
                     let title = null;
                     let titleElement = null;
                     
-                    // Try to find title in headings
-                    const headings = element.querySelectorAll('h1, h2, h3, h4');
+                    // Try to find title in headings (including h5 for table-based results)
+                    const headings = element.querySelectorAll('h1, h2, h3, h4, h5');
                     if (headings.length > 0) {
                         titleElement = headings[0];
                         title = titleElement.textContent.trim();
@@ -177,6 +189,34 @@ Actor.main(async () => {
                         }
                     }
                     
+                    // Try to find date in span elements (common in table-based layouts)
+                    if (!date) {
+                        const spans = element.querySelectorAll('span');
+                        for (const span of spans) {
+                            const text = span.textContent.trim();
+                            // Check for date patterns like MM/DD/YYYY or DD/MM/YYYY
+                            if (/\d{1,2}\/\d{1,2}\/\d{4}/.test(text) || 
+                                /\d{1,2}-\d{1,2}-\d{4}/.test(text) ||
+                                /\d{1,2}\.\d{1,2}\.\d{4}/.test(text)) {
+                                date = text;
+                                break;
+                            }
+                            
+                            // Check for date patterns like "25 October 2010" or "18 April 2022"
+                            const dateMatch = text.match(/\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}/i);
+                            if (dateMatch) {
+                                date = text;
+                                break;
+                            }
+                            
+                            // Check for time patterns like "11:19:08 PM"
+                            if (/\d{1,2}:\d{2}:\d{2}\s+(?:AM|PM)/.test(text)) {
+                                date = text;
+                                break;
+                            }
+                        }
+                    }
+                    
                     // Try to find date in text content (common pattern: DD Month YYYY)
                     if (!date) {
                         // Get all text nodes directly under the element
@@ -213,6 +253,24 @@ Actor.main(async () => {
                         }
                     }
                     
+                    // Try spans (common in table-based layouts)
+                    if (!summary) {
+                        const spans = element.querySelectorAll('span');
+                        // Skip the first span if it contains the date
+                        for (let i = 0; i < spans.length; i++) {
+                            const spanText = spans[i].textContent.trim();
+                            // Skip if this span contains the date
+                            if (date && spanText.includes(date)) {
+                                continue;
+                            }
+                            // Use this span if it has substantial text
+                            if (spanText.length > 30) {
+                                summary = spanText;
+                                break;
+                            }
+                        }
+                    }
+                    
                     // If still no summary, try to extract text after the title/date
                     if (!summary && titleElement) {
                         // Get all text content
@@ -243,6 +301,14 @@ Actor.main(async () => {
                     const summaryConfidence = summary ? 0.8 : 0;
                     const overallConfidence = (titleConfidence + linkConfidence + dateConfidence + summaryConfidence) / 4;
                     
+                    // Determine which method was used
+                    let method = 'direct';
+                    if (element.tagName === 'TR' || element.closest('tr')) {
+                        method = 'table';
+                    } else if (element.querySelector('h3 > a, h3 a')) {
+                        method = 'flat';
+                    }
+                    
                     return {
                         title,
                         link,
@@ -256,10 +322,10 @@ Actor.main(async () => {
                             overall: overallConfidence
                         },
                         methods: {
-                            title: 'direct',
-                            link: 'direct',
-                            date: 'direct',
-                            summary: 'direct'
+                            title: method,
+                            link: method,
+                            date: method,
+                            summary: method
                         }
                     };
                 });
@@ -289,7 +355,7 @@ Actor.main(async () => {
                 }
 
                 // Add extraction method to the set
-                methodsUsed.add('direct');
+                methodsUsed.add(article.methods.title);
 
                 // Push the article to the dataset
                 await dataset.pushData(article);
