@@ -108,14 +108,14 @@ Actor.main(async () => {
             // Special handling for alarabiya.net
             if (request.url.includes('alarabiya.net')) {
                 try {
-                    // Direct extraction for alarabiya.net
-                    const alarabiyaArticles = await extractAlarabiyaArticles(page, log);
+                    // Extract articles using a specialized method for alarabiya.net
+                    const articles = await extractAlarabiyaArticlesDirectly(page, log);
                     
-                    if (alarabiyaArticles.length > 0) {
-                        log.info(`Extracted ${alarabiyaArticles.length} articles from alarabiya.net`);
+                    if (articles.length > 0) {
+                        log.info(`Extracted ${articles.length} articles from alarabiya.net`);
                         
                         // Process and store the extracted articles
-                        for (const article of alarabiyaArticles) {
+                        for (const article of articles) {
                             // Skip if we've reached the maximum number of items
                             if (maxItems > 0 && extractedCount >= maxItems) {
                                 log.info(`Reached maximum number of items (${maxItems}), stopping extraction`);
@@ -123,7 +123,7 @@ Actor.main(async () => {
                             }
                             
                             // Add extraction method to the set
-                            methodsUsed.add('alarabiya-direct');
+                            methodsUsed.add('alarabiya-specialized');
                             
                             // Push the article to the dataset
                             await dataset.pushData(article);
@@ -131,34 +131,18 @@ Actor.main(async () => {
                         }
                         
                         return;
+                    } else {
+                        log.info('No articles found with specialized method, falling back to general extraction');
                     }
                 } catch (error) {
-                    log.error(`Error during alarabiya.net direct extraction: ${error.message}`);
-                    // Continue with the general extraction approach
+                    log.error(`Error during specialized extraction for alarabiya.net: ${error.message}`);
+                    log.info('Falling back to general extraction method');
                 }
             }
 
             // Extract articles using multiple approaches directly in browser context
             try {
                 const articleElements = await page.evaluate((pageUrl) => {
-                    // Helper function to check if an element is likely a search result
-                    const isLikelySearchResult = (element) => {
-                        // Check if it has a heading and link
-                        const hasHeading = element.querySelector('h1, h2, h3, h4, h5, h6') !== null;
-                        const hasLink = element.querySelector('a') !== null;
-                        
-                        // Check if it has substantial content
-                        const hasContent = element.textContent.trim().length > 80;
-                        
-                        // Check if it's not in a sidebar
-                        const notInSidebar = 
-                            !element.closest('[class*="sidebar"], [id*="sidebar"], [class*="widget"], [class*="latest"], [class*="most-read"]') &&
-                            !element.closest('[class*="footer"], [id*="footer"], [class*="header"], [id*="header"]') &&
-                            !element.closest('nav, [role="navigation"]');
-                        
-                        return hasHeading && hasLink && hasContent && notInSidebar;
-                    };
-                    
                     // Helper function to clean text (remove extra whitespace, newlines)
                     const cleanText = (text) => {
                         if (!text) return '';
@@ -194,182 +178,12 @@ Actor.main(async () => {
                         return true;
                     };
                     
-                    // Special handling for alarabiya.net
-                    let alarabiyaResults = [];
-                    if (pageUrl.includes('alarabiya.net')) {
-                        // For alarabiya.net, we need to target the search result cards specifically
-                        // These are typically article cards with a title, date, and category
-                        
-                        // First, try to find all search result cards
-                        const searchResultCards = Array.from(document.querySelectorAll('article, .card, [class*="card"], [class*="article"], [class*="search-result"]'));
-                        
-                        // If we didn't find any with the above selectors, try a more general approach
-                        if (searchResultCards.length === 0) {
-                            // Look for any container that has a news title and date
-                            const allContainers = Array.from(document.querySelectorAll('div, section, article'));
-                            
-                            // Filter to those that look like news items
-                            const newsContainers = allContainers.filter(container => {
-                                // Must have a title-like element
-                                const hasTitle = container.querySelector('h1, h2, h3, h4, h5, h6, a') !== null;
-                                
-                                // Must have a date-like element or text
-                                const hasDate = container.textContent.includes('ago') || 
-                                               container.textContent.includes('May') ||
-                                               container.textContent.includes('April') ||
-                                               container.textContent.includes('March') ||
-                                               container.textContent.includes('day') ||
-                                               container.querySelector('[class*="date"], [class*="time"], time') !== null;
-                                
-                                // Must have a link
-                                const hasLink = container.querySelector('a') !== null;
-                                
-                                // Must have substantial content
-                                const hasContent = container.textContent.trim().length > 50;
-                                
-                                // Must not be a navigation element
-                                const notNavigation = !container.closest('nav, header, footer');
-                                
-                                return hasTitle && hasDate && hasLink && hasContent && notNavigation;
-                            });
-                            
-                            // Add these to our search result cards
-                            searchResultCards.push(...newsContainers);
-                        }
-                        
-                        // Process each search result card
-                        alarabiyaResults = searchResultCards
-                            .filter(card => {
-                                // Make sure it has a title and is not a cookie banner or navigation
-                                return card.textContent.trim().length > 50 && 
-                                       !card.textContent.includes('cookies') &&
-                                       !card.textContent.includes('Accept') &&
-                                       card.querySelector('a') !== null;
-                            })
-                            .map(card => {
-                                // Extract title
-                                let title = '';
-                                let titleElement = card.querySelector('h1, h2, h3, h4, h5, h6');
-                                
-                                if (titleElement) {
-                                    title = cleanText(titleElement.textContent);
-                                } else {
-                                    // Try to find a substantial link that might be a title
-                                    const links = Array.from(card.querySelectorAll('a'))
-                                        .filter(a => a.textContent.trim().length > 20);
-                                    
-                                    if (links.length > 0) {
-                                        title = cleanText(links[0].textContent);
-                                        titleElement = links[0];
-                                    }
-                                }
-                                
-                                // Extract link
-                                let link = '';
-                                if (titleElement && titleElement.tagName === 'A') {
-                                    link = titleElement.href;
-                                } else if (titleElement && titleElement.querySelector('a')) {
-                                    link = titleElement.querySelector('a').href;
-                                } else {
-                                    const links = Array.from(card.querySelectorAll('a'))
-                                        .filter(a => isNewsArticleLink(a.href));
-                                    
-                                    if (links.length > 0) {
-                                        link = links[0].href;
-                                    }
-                                }
-                                
-                                // Extract date
-                                let date = '';
-                                // Look for date text
-                                const dateElements = card.querySelectorAll('[class*="date"], [class*="time"], time, .meta');
-                                if (dateElements.length > 0) {
-                                    date = cleanText(dateElements[0].textContent);
-                                } else {
-                                    // Look for text that might be a date
-                                    const spans = Array.from(card.querySelectorAll('span, div'));
-                                    for (const span of spans) {
-                                        const text = span.textContent.trim();
-                                        if (text.includes('ago') || 
-                                            text.includes('day') || 
-                                            text.includes('hour') || 
-                                            text.includes('min') ||
-                                            text.includes('May') ||
-                                            text.includes('April') ||
-                                            text.includes('March') ||
-                                            /\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(text)) {
-                                            date = cleanText(text);
-                                            break;
-                                        }
-                                    }
-                                }
-                                
-                                // Extract category/section
-                                let category = '';
-                                const categoryElements = card.querySelectorAll('[class*="category"], [class*="section"]');
-                                if (categoryElements.length > 0) {
-                                    category = cleanText(categoryElements[0].textContent);
-                                } else {
-                                    // Try to find category text
-                                    const smallTexts = Array.from(card.querySelectorAll('span, small, div'))
-                                        .filter(el => el.textContent.trim().length < 30)
-                                        .map(el => el.textContent.trim());
-                                    
-                                    // Look for common category names
-                                    const categoryNames = ['News', 'Business', 'Sports', 'Entertainment', 'Politics', 
-                                                          'Technology', 'Science', 'Health', 'Opinion', 'World', 
-                                                          'Middle East', 'US News', 'Saudi Arabia'];
-                                    
-                                    for (const text of smallTexts) {
-                                        if (categoryNames.some(cat => text.includes(cat))) {
-                                            category = text;
-                                            break;
-                                        }
-                                    }
-                                }
-                                
-                                // For alarabiya, we don't extract summaries as they're not consistently available
-                                // Just use the category as a summary if available
-                                let summary = category || '';
-                                
-                                return {
-                                    element: card,
-                                    title,
-                                    link,
-                                    date,
-                                    summary,
-                                    confidence: {
-                                        title: 0.9,
-                                        link: 0.9,
-                                        date: date ? 0.8 : 0,
-                                        summary: summary ? 0.8 : 0,
-                                        overall: 0.9 // Default confidence for alarabiya results
-                                    },
-                                    methods: {
-                                        title: 'alarabiya',
-                                        link: 'alarabiya',
-                                        date: 'alarabiya',
-                                        summary: 'alarabiya'
-                                    }
-                                };
-                            });
-                    }
-                    
                     // APPROACH 1: Find all potential article elements in the main content area
                     const allArticleLikeElements = Array.from(document.querySelectorAll('article, div > h2, div > h3, .search-result, .result-item, .news-item, [class*="article"], [class*="post"], [class*="story"], [class*="entry"], [class*="item"], [class*="result"]'))
                         .filter(el => {
-                            // For heading elements, get their parent
-                            if (el.tagName === 'H1' || el.tagName === 'H2' || el.tagName === 'H3' || el.tagName === 'H4' || el.tagName === 'H5' || el.tagName === 'H6') {
-                                return isLikelySearchResult(el.parentElement);
-                            }
-                            return isLikelySearchResult(el);
-                        })
-                        .map(el => {
-                            // For heading elements, use their parent
-                            if (el.tagName === 'H1' || el.tagName === 'H2' || el.tagName === 'H3' || el.tagName === 'H4' || el.tagName === 'H5' || el.tagName === 'H6') {
-                                return el.parentElement;
-                            }
-                            return el;
+                            // Basic filtering to ensure it's likely an article
+                            return el.textContent.trim().length > 100 && 
+                                   el.querySelector('a') !== null;
                         });
                     
                     // APPROACH 2: Find all links with substantial text that might be article titles
@@ -502,7 +316,6 @@ Actor.main(async () => {
                     
                     // Combine all potential article elements
                     const combinedElements = [
-                        ...alarabiyaResults.map(r => r.element), // Add alarabiya elements first
                         ...allArticleLikeElements, 
                         ...substantialLinks,
                         ...flatSearchResults,
@@ -516,16 +329,8 @@ Actor.main(async () => {
                     // Extract data from each potential article
                     const results = [];
                     
-                    // First, add the pre-processed alarabiya results
-                    results.push(...alarabiyaResults);
-                    
-                    // Then process the other elements
+                    // Process the elements
                     for (const element of combinedElements) {
-                        // Skip if this element is already in alarabiyaResults
-                        if (alarabiyaResults.some(r => r.element === element)) {
-                            continue;
-                        }
-                        
                         // Extract title
                         let title = null;
                         let titleElement = null;
@@ -899,17 +704,17 @@ Actor.main(async () => {
             } catch (error) {
                 log.error(`Error during article extraction: ${error.message}`);
                 
-                // If this is alarabiya.net, try the direct extraction method
+                // If this is alarabiya.net, try the direct extraction method again
                 if (request.url.includes('alarabiya.net')) {
                     try {
-                        // Direct extraction for alarabiya.net
-                        const alarabiyaArticles = await extractAlarabiyaArticles(page, log);
+                        // Extract articles using a specialized method for alarabiya.net
+                        const articles = await extractAlarabiyaArticlesDirectly(page, log);
                         
-                        if (alarabiyaArticles.length > 0) {
-                            log.info(`Extracted ${alarabiyaArticles.length} articles from alarabiya.net using direct method`);
+                        if (articles.length > 0) {
+                            log.info(`Extracted ${articles.length} articles from alarabiya.net after error recovery`);
                             
                             // Process and store the extracted articles
-                            for (const article of alarabiyaArticles) {
+                            for (const article of articles) {
                                 // Skip if we've reached the maximum number of items
                                 if (maxItems > 0 && extractedCount >= maxItems) {
                                     log.info(`Reached maximum number of items (${maxItems}), stopping extraction`);
@@ -917,7 +722,7 @@ Actor.main(async () => {
                                 }
                                 
                                 // Add extraction method to the set
-                                methodsUsed.add('alarabiya-direct');
+                                methodsUsed.add('alarabiya-specialized');
                                 
                                 // Push the article to the dataset
                                 await dataset.pushData(article);
@@ -943,149 +748,743 @@ Actor.main(async () => {
         maxRequestRetries: 5,
     });
 
-    // Direct extraction function for alarabiya.net
-    async function extractAlarabiyaArticles(page, log) {
-        log.info('Using direct extraction method for alarabiya.net');
+    // Specialized extraction function for alarabiya.net
+    async function extractAlarabiyaArticlesDirectly(page, log) {
+        log.info('Using specialized extraction method for alarabiya.net');
         
-        // This function directly extracts articles from alarabiya.net without using page.evaluate
-        // It's more reliable for sites that block automated access
-        
-        const articles = [];
+        // This function uses a completely different approach to extract articles from alarabiya.net
+        // It's designed to be more robust against site changes and anti-bot measures
         
         try {
-            // Wait for search results to load
-            await page.waitForSelector('.card, article, [class*="search-result"]', { timeout: 5000 }).catch(() => {
-                log.info('No standard article elements found, trying alternative selectors');
-            });
+            // Get the HTML content of the page
+            const html = await page.content();
             
-            // Get all article titles
-            const titleElements = await page.$$('h1, h2, h3, h4, h5, h6');
-            
-            for (const titleElement of titleElements) {
-                try {
-                    // Check if this title has a link
-                    const linkElement = await titleElement.$('a') || await titleElement.evaluateHandle(el => {
-                        return el.closest('a');
-                    });
+            // Use JavaScript to parse the HTML directly
+            const articles = await page.evaluate(() => {
+                // Helper function to clean text
+                const cleanText = (text) => {
+                    if (!text) return '';
+                    return text.replace(/\s+/g, ' ').trim();
+                };
+                
+                // Find all news items on the page
+                const newsItems = [];
+                
+                // Look for all news cards on the page
+                const newsCards = document.querySelectorAll('.card, article, .article, [class*="article-item"], [class*="news-item"]');
+                
+                // Process each news card
+                for (const card of newsCards) {
+                    try {
+                        // Skip if it's not a news item (e.g., navigation, ads)
+                        if (card.closest('nav, header, footer, [class*="menu"], [class*="nav"]')) {
+                            continue;
+                        }
+                        
+                        // Skip if it's too small to be a news item
+                        if (card.textContent.trim().length < 50) {
+                            continue;
+                        }
+                        
+                        // Find the title
+                        let title = '';
+                        let link = '';
+                        
+                        // Try to find the title in a heading
+                        const heading = card.querySelector('h1, h2, h3, h4, h5, h6');
+                        if (heading) {
+                            title = cleanText(heading.textContent);
+                            
+                            // Try to find the link in the heading
+                            const headingLink = heading.querySelector('a');
+                            if (headingLink) {
+                                link = headingLink.href;
+                            }
+                        }
+                        
+                        // If no heading, try to find a substantial link
+                        if (!title || !link) {
+                            const links = Array.from(card.querySelectorAll('a'))
+                                .filter(a => a.textContent.trim().length > 20);
+                            
+                            if (links.length > 0) {
+                                title = title || cleanText(links[0].textContent);
+                                link = link || links[0].href;
+                            }
+                        }
+                        
+                        // Skip if we couldn't find a title or link
+                        if (!title || !link) {
+                            continue;
+                        }
+                        
+                        // Find the date
+                        let date = '';
+                        
+                        // Look for date elements
+                        const dateElement = card.querySelector('[class*="date"], [class*="time"], time');
+                        if (dateElement) {
+                            date = cleanText(dateElement.textContent);
+                        }
+                        
+                        // If no date element, look for text that might be a date
+                        if (!date) {
+                            const spans = Array.from(card.querySelectorAll('span, div'));
+                            for (const span of spans) {
+                                const text = span.textContent.trim();
+                                if (text.includes('ago') || 
+                                    text.includes('day') || 
+                                    text.includes('hour') || 
+                                    text.includes('min') ||
+                                    text.includes('May') ||
+                                    text.includes('April') ||
+                                    text.includes('March') ||
+                                    /\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(text)) {
+                                    date = cleanText(text);
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // Find the category/section
+                        let category = '';
+                        
+                        // Look for category elements
+                        const categoryElement = card.querySelector('[class*="category"], [class*="section"]');
+                        if (categoryElement) {
+                            category = cleanText(categoryElement.textContent);
+                        }
+                        
+                        // If no category element, look for text that might be a category
+                        if (!category) {
+                            const spans = Array.from(card.querySelectorAll('span, small, div'));
+                            const categoryNames = ['News', 'Business', 'Sports', 'Entertainment', 'Politics', 
+                                                  'Technology', 'Science', 'Health', 'Opinion', 'World', 
+                                                  'Middle East', 'US News', 'Saudi Arabia'];
+                            
+                            for (const span of spans) {
+                                const text = span.textContent.trim();
+                                if (categoryNames.some(cat => text.includes(cat))) {
+                                    category = cleanText(text);
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // Add to results
+                        newsItems.push({
+                            title,
+                            link,
+                            date: date || '',
+                            summary: category || '',
+                            confidence: {
+                                title: 0.9,
+                                link: 0.9,
+                                date: date ? 0.8 : 0,
+                                summary: category ? 0.8 : 0,
+                                overall: 0.9
+                            },
+                            methods: {
+                                title: 'alarabiya-specialized',
+                                link: 'alarabiya-specialized',
+                                date: 'alarabiya-specialized',
+                                summary: 'alarabiya-specialized'
+                            }
+                        });
+                    } catch (error) {
+                        console.error('Error processing card:', error);
+                        continue;
+                    }
+                }
+                
+                // If we didn't find any news items with the above approach, try a more general approach
+                if (newsItems.length === 0) {
+                    // Look for all links that might be news items
+                    const links = Array.from(document.querySelectorAll('a'))
+                        .filter(a => {
+                            // Must have substantial text
+                            const hasText = a.textContent.trim().length > 20;
+                            
+                            // Must not be in navigation
+                            const notInNav = !a.closest('nav, header, footer, [class*="menu"], [class*="nav"]');
+                            
+                            // Must have a proper href
+                            const hasHref = a.href && a.href.includes('/');
+                            
+                            // Must not be a utility link
+                            const notUtility = !a.href.includes('/about') && 
+                                              !a.href.includes('/contact') && 
+                                              !a.href.includes('/privacy') && 
+                                              !a.href.includes('/terms');
+                            
+                            return hasText && notInNav && hasHref && notUtility;
+                        });
                     
-                    if (!linkElement) continue;
+                    // Process each link
+                    for (const link of links) {
+                        try {
+                            // Get the title from the link text
+                            const title = cleanText(link.textContent);
+                            
+                            // Get the parent container
+                            let container = link.parentElement;
+                            let depth = 0;
+                            
+                            // Go up the DOM tree to find a container with more content
+                            while (depth < 3 && container && container.parentElement) {
+                                if (container.textContent.trim().length > 100 || 
+                                    container.querySelectorAll('span, div').length > 2) {
+                                    break;
+                                }
+                                container = container.parentElement;
+                                depth++;
+                            }
+                            
+                            // Find the date
+                            let date = '';
+                            
+                            // Look for date elements
+                            const dateElement = container.querySelector('[class*="date"], [class*="time"], time');
+                            if (dateElement) {
+                                date = cleanText(dateElement.textContent);
+                            }
+                            
+                            // If no date element, look for text that might be a date
+                            if (!date) {
+                                const spans = Array.from(container.querySelectorAll('span, div'));
+                                for (const span of spans) {
+                                    const text = span.textContent.trim();
+                                    if (text.includes('ago') || 
+                                        text.includes('day') || 
+                                        text.includes('hour') || 
+                                        text.includes('min') ||
+                                        text.includes('May') ||
+                                        text.includes('April') ||
+                                        text.includes('March') ||
+                                        /\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(text)) {
+                                        date = cleanText(text);
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Find the category/section
+                            let category = '';
+                            
+                            // Look for category elements
+                            const categoryElement = container.querySelector('[class*="category"], [class*="section"]');
+                            if (categoryElement) {
+                                category = cleanText(categoryElement.textContent);
+                            }
+                            
+                            // If no category element, look for text that might be a category
+                            if (!category) {
+                                const spans = Array.from(container.querySelectorAll('span, small, div'));
+                                const categoryNames = ['News', 'Business', 'Sports', 'Entertainment', 'Politics', 
+                                                      'Technology', 'Science', 'Health', 'Opinion', 'World', 
+                                                      'Middle East', 'US News', 'Saudi Arabia'];
+                                
+                                for (const span of spans) {
+                                    const text = span.textContent.trim();
+                                    if (categoryNames.some(cat => text.includes(cat))) {
+                                        category = cleanText(text);
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Add to results
+                            newsItems.push({
+                                title,
+                                link: link.href,
+                                date: date || '',
+                                summary: category || '',
+                                confidence: {
+                                    title: 0.9,
+                                    link: 0.9,
+                                    date: date ? 0.8 : 0,
+                                    summary: category ? 0.8 : 0,
+                                    overall: 0.9
+                                },
+                                methods: {
+                                    title: 'alarabiya-specialized',
+                                    link: 'alarabiya-specialized',
+                                    date: 'alarabiya-specialized',
+                                    summary: 'alarabiya-specialized'
+                                }
+                            });
+                        } catch (error) {
+                            console.error('Error processing link:', error);
+                            continue;
+                        }
+                    }
+                }
+                
+                // SPECIAL CASE: If we're on the search results page, look for the search results directly
+                if (window.location.href.includes('/search') || window.location.href.includes('?q=') || window.location.href.includes('?query=')) {
+                    // Try to find all search result items
+                    const searchResults = document.querySelectorAll('.search-result, [class*="search-result"], [class*="search_result"], [class*="result-item"], [class*="search-item"]');
                     
-                    // Get title text
-                    const title = await titleElement.evaluate(el => el.textContent.trim());
+                    if (searchResults.length > 0) {
+                        for (const result of searchResults) {
+                            try {
+                                // Find the title and link
+                                let title = '';
+                                let link = '';
+                                
+                                // Try to find the title in a heading
+                                const heading = result.querySelector('h1, h2, h3, h4, h5, h6');
+                                if (heading) {
+                                    title = cleanText(heading.textContent);
+                                    
+                                    // Try to find the link in the heading
+                                    const headingLink = heading.querySelector('a');
+                                    if (headingLink) {
+                                        link = headingLink.href;
+                                    }
+                                }
+                                
+                                // If no heading, try to find a substantial link
+                                if (!title || !link) {
+                                    const links = Array.from(result.querySelectorAll('a'))
+                                        .filter(a => a.textContent.trim().length > 20);
+                                    
+                                    if (links.length > 0) {
+                                        title = title || cleanText(links[0].textContent);
+                                        link = link || links[0].href;
+                                    }
+                                }
+                                
+                                // Skip if we couldn't find a title or link
+                                if (!title || !link) {
+                                    continue;
+                                }
+                                
+                                // Find the date
+                                let date = '';
+                                
+                                // Look for date elements
+                                const dateElement = result.querySelector('[class*="date"], [class*="time"], time');
+                                if (dateElement) {
+                                    date = cleanText(dateElement.textContent);
+                                }
+                                
+                                // If no date element, look for text that might be a date
+                                if (!date) {
+                                    const spans = Array.from(result.querySelectorAll('span, div'));
+                                    for (const span of spans) {
+                                        const text = span.textContent.trim();
+                                        if (text.includes('ago') || 
+                                            text.includes('day') || 
+                                            text.includes('hour') || 
+                                            text.includes('min') ||
+                                            text.includes('May') ||
+                                            text.includes('April') ||
+                                            text.includes('March') ||
+                                            /\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(text)) {
+                                            date = cleanText(text);
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                // Find the category/section
+                                let category = '';
+                                
+                                // Look for category elements
+                                const categoryElement = result.querySelector('[class*="category"], [class*="section"]');
+                                if (categoryElement) {
+                                    category = cleanText(categoryElement.textContent);
+                                }
+                                
+                                // If no category element, look for text that might be a category
+                                if (!category) {
+                                    const spans = Array.from(result.querySelectorAll('span, small, div'));
+                                    const categoryNames = ['News', 'Business', 'Sports', 'Entertainment', 'Politics', 
+                                                          'Technology', 'Science', 'Health', 'Opinion', 'World', 
+                                                          'Middle East', 'US News', 'Saudi Arabia'];
+                                    
+                                    for (const span of spans) {
+                                        const text = span.textContent.trim();
+                                        if (categoryNames.some(cat => text.includes(cat))) {
+                                            category = cleanText(text);
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                // Add to results
+                                newsItems.push({
+                                    title,
+                                    link,
+                                    date: date || '',
+                                    summary: category || '',
+                                    confidence: {
+                                        title: 0.9,
+                                        link: 0.9,
+                                        date: date ? 0.8 : 0,
+                                        summary: category ? 0.8 : 0,
+                                        overall: 0.9
+                                    },
+                                    methods: {
+                                        title: 'alarabiya-specialized',
+                                        link: 'alarabiya-specialized',
+                                        date: 'alarabiya-specialized',
+                                        summary: 'alarabiya-specialized'
+                                    }
+                                });
+                            } catch (error) {
+                                console.error('Error processing search result:', error);
+                                continue;
+                            }
+                        }
+                    }
+                }
+                
+                // SPECIAL CASE: Look for news items in the main content area
+                const mainContent = document.querySelector('main, [role="main"], #content, .content, [class*="main-content"]');
+                if (mainContent) {
+                    // Look for all links in the main content area
+                    const links = Array.from(mainContent.querySelectorAll('a'))
+                        .filter(a => {
+                            // Must have substantial text
+                            const hasText = a.textContent.trim().length > 20;
+                            
+                            // Must have a proper href
+                            const hasHref = a.href && a.href.includes('/');
+                            
+                            // Must not be a utility link
+                            const notUtility = !a.href.includes('/about') && 
+                                              !a.href.includes('/contact') && 
+                                              !a.href.includes('/privacy') && 
+                                              !a.href.includes('/terms');
+                            
+                            return hasText && hasHref && notUtility;
+                        });
                     
-                    // Skip very short titles or navigation items
-                    if (title.length < 20 || title.split(' ').length < 3) continue;
-                    
-                    // Get link URL
-                    const link = await linkElement.evaluate(el => el.href);
-                    
-                    // Skip navigation links
-                    if (link.includes('/about') || 
-                        link.includes('/contact') || 
-                        link.includes('/privacy') || 
-                        link.includes('/terms') ||
-                        link.includes('/login') ||
-                        link.includes('/register') ||
-                        link.includes('/subscribe') ||
-                        link.includes('/newsletter')) {
+                    // Process each link
+                    for (const link of links) {
+                        try {
+                            // Skip if this link is already in the results
+                            if (newsItems.some(item => item.link === link.href)) {
+                                continue;
+                            }
+                            
+                            // Get the title from the link text
+                            const title = cleanText(link.textContent);
+                            
+                            // Get the parent container
+                            let container = link.parentElement;
+                            let depth = 0;
+                            
+                            // Go up the DOM tree to find a container with more content
+                            while (depth < 3 && container && container.parentElement) {
+                                if (container.textContent.trim().length > 100 || 
+                                    container.querySelectorAll('span, div').length > 2) {
+                                    break;
+                                }
+                                container = container.parentElement;
+                                depth++;
+                            }
+                            
+                            // Find the date
+                            let date = '';
+                            
+                            // Look for date elements
+                            const dateElement = container.querySelector('[class*="date"], [class*="time"], time');
+                            if (dateElement) {
+                                date = cleanText(dateElement.textContent);
+                            }
+                            
+                            // If no date element, look for text that might be a date
+                            if (!date) {
+                                const spans = Array.from(container.querySelectorAll('span, div'));
+                                for (const span of spans) {
+                                    const text = span.textContent.trim();
+                                    if (text.includes('ago') || 
+                                        text.includes('day') || 
+                                        text.includes('hour') || 
+                                        text.includes('min') ||
+                                        text.includes('May') ||
+                                        text.includes('April') ||
+                                        text.includes('March') ||
+                                        /\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(text)) {
+                                        date = cleanText(text);
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Find the category/section
+                            let category = '';
+                            
+                            // Look for category elements
+                            const categoryElement = container.querySelector('[class*="category"], [class*="section"]');
+                            if (categoryElement) {
+                                category = cleanText(categoryElement.textContent);
+                            }
+                            
+                            // If no category element, look for text that might be a category
+                            if (!category) {
+                                const spans = Array.from(container.querySelectorAll('span, small, div'));
+                                const categoryNames = ['News', 'Business', 'Sports', 'Entertainment', 'Politics', 
+                                                      'Technology', 'Science', 'Health', 'Opinion', 'World', 
+                                                      'Middle East', 'US News', 'Saudi Arabia'];
+                                
+                                for (const span of spans) {
+                                    const text = span.textContent.trim();
+                                    if (categoryNames.some(cat => text.includes(cat))) {
+                                        category = cleanText(text);
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Add to results
+                            newsItems.push({
+                                title,
+                                link: link.href,
+                                date: date || '',
+                                summary: category || '',
+                                confidence: {
+                                    title: 0.9,
+                                    link: 0.9,
+                                    date: date ? 0.8 : 0,
+                                    summary: category ? 0.8 : 0,
+                                    overall: 0.9
+                                },
+                                methods: {
+                                    title: 'alarabiya-specialized',
+                                    link: 'alarabiya-specialized',
+                                    date: 'alarabiya-specialized',
+                                    summary: 'alarabiya-specialized'
+                                }
+                            });
+                        } catch (error) {
+                            console.error('Error processing link:', error);
+                            continue;
+                        }
+                    }
+                }
+                
+                // SPECIAL CASE: Look for news items in a list
+                const lists = document.querySelectorAll('ul, ol');
+                for (const list of lists) {
+                    // Skip if it's a navigation list
+                    if (list.closest('nav, header, footer, [class*="menu"], [class*="nav"]')) {
                         continue;
                     }
                     
-                    // Get parent container for date and category
-                    const container = await titleElement.evaluateHandle(el => {
-                        let container = el.parentElement;
-                        let depth = 0;
-                        
-                        while (depth < 3 && container && container.parentElement) {
-                            if (container.textContent.trim().length > 150 || 
-                                container.querySelectorAll('span, div').length > 2) {
-                                break;
-                            }
-                            container = container.parentElement;
-                            depth++;
-                        }
-                        
-                        return container;
-                    });
-                    
-                    // Try to find date
-                    let date = '';
-                    const dateElement = await container.$('[class*="date"], [class*="time"], time, .meta');
-                    
-                    if (dateElement) {
-                        date = await dateElement.evaluate(el => el.textContent.trim());
-                    } else {
-                        // Try to find date in spans
-                        const spans = await container.$$('span');
-                        for (const span of spans) {
-                            const text = await span.evaluate(el => el.textContent.trim());
-                            
-                            if (text.includes('ago') || 
-                                text.includes('day') || 
-                                text.includes('hour') || 
-                                text.includes('min') ||
-                                text.includes('May') ||
-                                text.includes('April') ||
-                                text.includes('March') ||
-                                /\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(text)) {
-                                date = text;
-                                break;
-                            }
-                        }
+                    // Skip if it's a small list
+                    if (list.children.length < 3) {
+                        continue;
                     }
                     
-                    // Try to find category
-                    let category = '';
-                    const categoryElement = await container.$('[class*="category"], [class*="section"]');
-                    
-                    if (categoryElement) {
-                        category = await categoryElement.evaluate(el => el.textContent.trim());
-                    } else {
-                        // Try to find category in spans
-                        const spans = await container.$$('span');
-                        const categoryNames = ['News', 'Business', 'Sports', 'Entertainment', 'Politics', 
-                                              'Technology', 'Science', 'Health', 'Opinion', 'World', 
-                                              'Middle East', 'US News', 'Saudi Arabia'];
-                        
-                        for (const span of spans) {
-                            const text = await span.evaluate(el => el.textContent.trim());
-                            
-                            if (categoryNames.some(cat => text.includes(cat))) {
-                                category = text;
-                                break;
+                    // Process each list item
+                    const listItems = list.querySelectorAll('li');
+                    for (const item of listItems) {
+                        try {
+                            // Skip if it's too small to be a news item
+                            if (item.textContent.trim().length < 50) {
+                                continue;
                             }
+                            
+                            // Find the title and link
+                            let title = '';
+                            let link = '';
+                            
+                            // Try to find the title in a heading
+                            const heading = item.querySelector('h1, h2, h3, h4, h5, h6');
+                            if (heading) {
+                                title = cleanText(heading.textContent);
+                                
+                                // Try to find the link in the heading
+                                const headingLink = heading.querySelector('a');
+                                if (headingLink) {
+                                    link = headingLink.href;
+                                }
+                            }
+                            
+                            // If no heading, try to find a substantial link
+                            if (!title || !link) {
+                                const links = Array.from(item.querySelectorAll('a'))
+                                    .filter(a => a.textContent.trim().length > 20);
+                                
+                                if (links.length > 0) {
+                                    title = title || cleanText(links[0].textContent);
+                                    link = link || links[0].href;
+                                }
+                            }
+                            
+                            // Skip if we couldn't find a title or link
+                            if (!title || !link) {
+                                continue;
+                            }
+                            
+                            // Skip if this link is already in the results
+                            if (newsItems.some(item => item.link === link)) {
+                                continue;
+                            }
+                            
+                            // Find the date
+                            let date = '';
+                            
+                            // Look for date elements
+                            const dateElement = item.querySelector('[class*="date"], [class*="time"], time');
+                            if (dateElement) {
+                                date = cleanText(dateElement.textContent);
+                            }
+                            
+                            // If no date element, look for text that might be a date
+                            if (!date) {
+                                const spans = Array.from(item.querySelectorAll('span, div'));
+                                for (const span of spans) {
+                                    const text = span.textContent.trim();
+                                    if (text.includes('ago') || 
+                                        text.includes('day') || 
+                                        text.includes('hour') || 
+                                        text.includes('min') ||
+                                        text.includes('May') ||
+                                        text.includes('April') ||
+                                        text.includes('March') ||
+                                        /\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(text)) {
+                                        date = cleanText(text);
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Find the category/section
+                            let category = '';
+                            
+                            // Look for category elements
+                            const categoryElement = item.querySelector('[class*="category"], [class*="section"]');
+                            if (categoryElement) {
+                                category = cleanText(categoryElement.textContent);
+                            }
+                            
+                            // If no category element, look for text that might be a category
+                            if (!category) {
+                                const spans = Array.from(item.querySelectorAll('span, small, div'));
+                                const categoryNames = ['News', 'Business', 'Sports', 'Entertainment', 'Politics', 
+                                                      'Technology', 'Science', 'Health', 'Opinion', 'World', 
+                                                      'Middle East', 'US News', 'Saudi Arabia'];
+                                
+                                for (const span of spans) {
+                                    const text = span.textContent.trim();
+                                    if (categoryNames.some(cat => text.includes(cat))) {
+                                        category = cleanText(text);
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Add to results
+                            newsItems.push({
+                                title,
+                                link,
+                                date: date || '',
+                                summary: category || '',
+                                confidence: {
+                                    title: 0.9,
+                                    link: 0.9,
+                                    date: date ? 0.8 : 0,
+                                    summary: category ? 0.8 : 0,
+                                    overall: 0.9
+                                },
+                                methods: {
+                                    title: 'alarabiya-specialized',
+                                    link: 'alarabiya-specialized',
+                                    date: 'alarabiya-specialized',
+                                    summary: 'alarabiya-specialized'
+                                }
+                            });
+                        } catch (error) {
+                            console.error('Error processing list item:', error);
+                            continue;
                         }
                     }
-                    
-                    // Add to results
-                    articles.push({
-                        title,
-                        link,
-                        date,
-                        summary: category || '',
-                        confidence: {
-                            title: 0.9,
-                            link: 0.9,
-                            date: date ? 0.8 : 0,
-                            summary: category ? 0.8 : 0,
-                            overall: 0.9
-                        },
-                        methods: {
-                            title: 'alarabiya-direct',
-                            link: 'alarabiya-direct',
-                            date: 'alarabiya-direct',
-                            summary: 'alarabiya-direct'
-                        }
-                    });
-                } catch (error) {
-                    log.error(`Error processing title element: ${error.message}`);
-                    continue;
                 }
-            }
+                
+                // Filter out duplicates
+                const uniqueItems = [];
+                const seenLinks = new Set();
+                
+                for (const item of newsItems) {
+                    if (!seenLinks.has(item.link)) {
+                        uniqueItems.push(item);
+                        seenLinks.add(item.link);
+                    }
+                }
+                
+                // Filter out non-news items
+                return uniqueItems.filter(item => {
+                    // Must have a title and link
+                    if (!item.title || !item.link) {
+                        return false;
+                    }
+                    
+                    // Skip very short titles
+                    if (item.title.length < 20) {
+                        return false;
+                    }
+                    
+                    // Skip titles that are just single words or very short phrases
+                    if (item.title.split(' ').length < 3) {
+                        return false;
+                    }
+                    
+                    // Skip navigation links
+                    if (item.link.includes('/about') || 
+                        item.link.includes('/contact') || 
+                        item.link.includes('/privacy') || 
+                        item.link.includes('/terms') ||
+                        item.link.includes('/login') ||
+                        item.link.includes('/register') ||
+                        item.link.includes('/subscribe') ||
+                        item.link.includes('/newsletter')) {
+                        return false;
+                    }
+                    
+                    // Skip cookie banners, privacy policies, etc.
+                    const skipTitles = [
+                        'cookie', 'privacy', 'terms', 'subscribe', 'newsletter',
+                        'sign in', 'login', 'register', 'account', 'follow'
+                    ];
+                    
+                    for (const skip of skipTitles) {
+                        if (item.title.toLowerCase().includes(skip)) {
+                            return false;
+                        }
+                    }
+                    
+                    // Keep items with news sections in the URL
+                    if (item.link.includes('/News/') || 
+                        item.link.includes('/Views/') ||
+                        item.link.includes('/Business/') ||
+                        item.link.includes('/sports/') ||
+                        item.link.includes('/lifestyle/')) {
+                        return true;
+                    }
+                    
+                    // Keep items with dates
+                    if (item.date) {
+                        return true;
+                    }
+                    
+                    // Keep items with categories
+                    if (item.summary) {
+                        return true;
+                    }
+                    
+                    // Default to true for anything that made it this far
+                    return true;
+                });
+            });
             
             return articles;
         } catch (error) {
-            log.error(`Error in direct extraction: ${error.message}`);
+            log.error(`Error in specialized extraction for alarabiya.net: ${error.message}`);
             return [];
         }
     }
