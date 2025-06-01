@@ -8,6 +8,33 @@
 const { Actor } = require('apify');
 const { PlaywrightCrawler, Dataset } = require('crawlee');
 
+// Helper function to determine if an element is likely main content vs sidebar/header/footer
+function isMainContent(element) {
+    // Check if element is likely part of a sidebar, header, footer, or navigation
+    const isLikelySidebar = 
+        element.closest('[class*="sidebar"], [id*="sidebar"], [class*="widget"], [class*="related"], [class*="latest"]') !== null ||
+        element.closest('[class*="footer"], [id*="footer"], [class*="header"], [id*="header"]') !== null ||
+        element.closest('nav, [role="navigation"]') !== null;
+    
+    // Check if element is likely a main content area
+    const isLikelyMainContent = 
+        element.closest('main, [role="main"], [id*="content"], [class*="content"], [id*="main"], [class*="main"], article') !== null;
+    
+    // Check if element has significant content
+    const hasSignificantContent = 
+        element.textContent.length > 150 && 
+        element.querySelectorAll('h1, h2, h3, h4, p').length > 1;
+    
+    // For search results, prioritize elements with dates and relevant content
+    const hasDateAndRelevance = 
+        (element.querySelector('[class*="date"], time, [datetime]') !== null) && 
+        element.textContent.toLowerCase().includes('oil') || 
+        element.textContent.toLowerCase().includes('energy') || 
+        element.textContent.toLowerCase().includes('news');
+    
+    return ((!isLikelySidebar || isLikelyMainContent) && hasSignificantContent) || hasDateAndRelevance;
+}
+
 // Initialize the Actor
 Actor.main(async () => {
     // Get input from the user
@@ -59,31 +86,84 @@ Actor.main(async () => {
                 // ADAPTIVE APPROACH: Detect article elements using multiple strategies
                 log.info('Detecting article elements using adaptive strategies...');
                 
-                // Strategy 1: Look for semantic HTML elements
+                // Strategy 1: Look for search results specifically
+                const searchResults = await page.$$eval('.search-results article, .search-result, [class*="search-result"], [class*="search"] article, [class*="result"] article, [class*="search"] .item', 
+                    (elements) => {
+                        return elements.map((el, index) => {
+                            // Use the isMainContent function
+                            if (window.isMainContent && typeof window.isMainContent === 'function') {
+                                if (window.isMainContent(el)) {
+                                    return {
+                                        index,
+                                        method: 'searchResults',
+                                        confidence: 0.95
+                                    };
+                                }
+                                return null;
+                            } else {
+                                // Fallback if function not available
+                                return {
+                                    index,
+                                    method: 'searchResults',
+                                    confidence: 0.95
+                                };
+                            }
+                        }).filter(item => item !== null);
+                    }
+                );
+                log.info(`Found ${searchResults.length} search result elements`);
+                
+                // Strategy 2: Look for semantic HTML elements
                 const semanticArticles = await page.$$eval('article, .article, [class*="article"], [class*="post"], [class*="news-item"], [class*="story"]', 
                     (elements) => {
                         return elements.map((el, index) => {
-                            return {
-                                index,
-                                method: 'semanticHTML',
-                                confidence: 0.9
-                            };
-                        });
+                            // Use the isMainContent function
+                            if (window.isMainContent && typeof window.isMainContent === 'function') {
+                                if (window.isMainContent(el)) {
+                                    return {
+                                        index,
+                                        method: 'semanticHTML',
+                                        confidence: 0.9
+                                    };
+                                }
+                                return null;
+                            } else {
+                                // Fallback if function not available
+                                return {
+                                    index,
+                                    method: 'semanticHTML',
+                                    confidence: 0.9
+                                };
+                            }
+                        }).filter(item => item !== null);
                     }
                 );
                 log.info(`Found ${semanticArticles.length} semantic HTML elements`);
                 
-                // Strategy 2: Look for content containers with specific patterns
+                // Strategy 3: Look for content containers with specific patterns
                 const contentContainers = await page.$$eval('div[class*="content"] > div, div[class*="search-result"], div[class*="listing"] > div, div[class*="feed"] > div', 
                     (elements) => {
                         return elements.map((el, index) => {
                             // Only consider elements with substantial content
                             if (el.textContent.length > 100 && el.querySelectorAll('a, h1, h2, h3, h4, p').length > 0) {
-                                return {
-                                    index,
-                                    method: 'contentPattern',
-                                    confidence: 0.8
-                                };
+                                // Use the isMainContent function
+                                if (window.isMainContent && typeof window.isMainContent === 'function') {
+                                    if (window.isMainContent(el)) {
+                                        return {
+                                            index,
+                                            method: 'contentPattern',
+                                            confidence: 0.8
+                                        };
+                                    }
+                                    return null;
+                                } else {
+                                    // Fallback if function not available
+                                    return {
+                                        index,
+                                        method: 'contentPattern',
+                                        confidence: 0.8
+                                    };
+                                }
                             }
                             return null;
                         }).filter(item => item !== null);
@@ -91,7 +171,7 @@ Actor.main(async () => {
                 );
                 log.info(`Found ${contentContainers.length} content containers`);
                 
-                // Strategy 3: Look for repeated structures (common in listings)
+                // Strategy 4: Look for repeated structures (common in listings)
                 const repeatedStructures = await page.$$eval('div > div, section > div, main > div', 
                     (elements) => {
                         // Group similar elements by structure
@@ -111,11 +191,23 @@ Actor.main(async () => {
                                     groups[signature] = [];
                                 }
                                 
-                                groups[signature].push({
-                                    index,
-                                    method: 'repeatedStructure',
-                                    confidence: 0.7
-                                });
+                                // Use the isMainContent function
+                                if (window.isMainContent && typeof window.isMainContent === 'function') {
+                                    if (window.isMainContent(el)) {
+                                        groups[signature].push({
+                                            index,
+                                            method: 'repeatedStructure',
+                                            confidence: 0.7
+                                        });
+                                    }
+                                } else {
+                                    // Fallback if function not available
+                                    groups[signature].push({
+                                        index,
+                                        method: 'repeatedStructure',
+                                        confidence: 0.7
+                                    });
+                                }
                             }
                         });
                         
@@ -132,14 +224,45 @@ Actor.main(async () => {
                 );
                 log.info(`Found ${repeatedStructures.length} repeated structures`);
                 
+                // Inject the isMainContent function into the page
+                await page.evaluate(() => {
+                    window.isMainContent = function(element) {
+                        // Check if element is likely part of a sidebar, header, footer, or navigation
+                        const isLikelySidebar = 
+                            element.closest('[class*="sidebar"], [id*="sidebar"], [class*="widget"], [class*="related"], [class*="latest"]') !== null ||
+                            element.closest('[class*="footer"], [id*="footer"], [class*="header"], [id*="header"]') !== null ||
+                            element.closest('nav, [role="navigation"]') !== null;
+                        
+                        // Check if element is likely a main content area
+                        const isLikelyMainContent = 
+                            element.closest('main, [role="main"], [id*="content"], [class*="content"], [id*="main"], [class*="main"], article') !== null;
+                        
+                        // Check if element has significant content
+                        const hasSignificantContent = 
+                            element.textContent.length > 150 && 
+                            element.querySelectorAll('h1, h2, h3, h4, p').length > 1;
+                        
+                        // For search results, prioritize elements with dates and relevant content
+                        const hasDateAndRelevance = 
+                            (element.querySelector('[class*="date"], time, [datetime]') !== null) && 
+                            element.textContent.toLowerCase().includes('oil') || 
+                            element.textContent.toLowerCase().includes('energy') || 
+                            element.textContent.toLowerCase().includes('news');
+                        
+                        return ((!isLikelySidebar || isLikelyMainContent) && hasSignificantContent) || hasDateAndRelevance;
+                    };
+                });
+                
                 // Combine all detected articles and remove duplicates
                 const allDetectedElements = [];
                 
                 // Process each detection strategy and add to allDetectedElements
-                for (const strategy of ['semanticHTML', 'contentPattern', 'repeatedStructure']) {
+                for (const strategy of ['searchResults', 'semanticHTML', 'contentPattern', 'repeatedStructure']) {
                     let elements;
                     
-                    if (strategy === 'semanticHTML') {
+                    if (strategy === 'searchResults') {
+                        elements = searchResults;
+                    } else if (strategy === 'semanticHTML') {
                         elements = semanticArticles;
                     } else if (strategy === 'contentPattern') {
                         elements = contentContainers;
@@ -152,19 +275,33 @@ Actor.main(async () => {
                         const element = elements[i];
                         
                         // Extract data using adaptive selectors
-                        // FIXED: Wrap multiple arguments in a single object
                         const articleData = await page.evaluate(({ index, strategy }) => {
                             let element;
                             
                             // Find the element based on strategy
-                            if (strategy === 'semanticHTML') {
+                            if (strategy === 'searchResults') {
+                                const elements = document.querySelectorAll('.search-results article, .search-result, [class*="search-result"], [class*="search"] article, [class*="result"] article, [class*="search"] .item');
+                                let validElements = [];
+                                for (const el of elements) {
+                                    if (window.isMainContent(el)) {
+                                        validElements.push(el);
+                                    }
+                                }
+                                element = validElements[index];
+                            } else if (strategy === 'semanticHTML') {
                                 const elements = document.querySelectorAll('article, .article, [class*="article"], [class*="post"], [class*="news-item"], [class*="story"]');
-                                element = elements[index];
+                                let validElements = [];
+                                for (const el of elements) {
+                                    if (window.isMainContent(el)) {
+                                        validElements.push(el);
+                                    }
+                                }
+                                element = validElements[index];
                             } else if (strategy === 'contentPattern') {
                                 const elements = document.querySelectorAll('div[class*="content"] > div, div[class*="search-result"], div[class*="listing"] > div, div[class*="feed"] > div');
                                 let validElements = [];
                                 for (const el of elements) {
-                                    if (el.textContent.length > 100 && el.querySelectorAll('a, h1, h2, h3, h4, p').length > 0) {
+                                    if (el.textContent.length > 100 && el.querySelectorAll('a, h1, h2, h3, h4, p').length > 0 && window.isMainContent(el)) {
                                         validElements.push(el);
                                     }
                                 }
@@ -178,7 +315,7 @@ Actor.main(async () => {
                                     const hasLink = el.querySelector('a') !== null;
                                     const hasText = el.textContent.trim().length > 100;
                                     
-                                    if (hasHeading && hasLink && hasText) {
+                                    if (hasHeading && hasLink && hasText && window.isMainContent(el)) {
                                         validElements.push(el);
                                     }
                                 }
@@ -307,7 +444,7 @@ Actor.main(async () => {
                                     summary: strategy
                                 }
                             };
-                        }, { index: element.index, strategy }); // FIXED: Wrapped arguments in a single object
+                        }, { index: element.index, strategy });
                         
                         // Only add if we have at least a title and link
                         if (articleData && articleData.title && articleData.link) {
