@@ -1,9 +1,9 @@
 /**
- * Universal News Scraper Actor with Anti-Blocking Measures
+ * Universal News Scraper Actor with Anti-Blocking Measures and Post-Filtering
  * 
  * This actor scrapes news items from various dynamic news sites,
  * automatically detecting and extracting title, link, date, and summary.
- * Includes proxy rotation and user-agent rotation to avoid blocking.
+ * Includes proxy rotation, user-agent rotation, and strict post-filtering.
  */
 
 const { Actor } = require('apify');
@@ -745,6 +745,7 @@ Actor.main(async () => {
             log.info(`Found ${articleElements.length} article elements`);
 
             // Process and store the extracted articles
+            const filteredArticles = [];
             for (const article of articleElements) {
                 // Skip if we've reached the maximum number of items
                 if (maxItems > 0 && extractedCount >= maxItems) {
@@ -752,15 +753,20 @@ Actor.main(async () => {
                     break;
                 }
 
-                // Add extraction method to the set
-                methodsUsed.add(article.methods.title);
+                // POST-FILTERING: Apply strict filtering to ensure only true news articles are included
+                const isNewsArticle = isLikelyNewsArticle(article);
+                if (isNewsArticle) {
+                    // Add extraction method to the set
+                    methodsUsed.add(article.methods.title);
 
-                // Push the article to the dataset
-                await dataset.pushData(article);
-                extractedCount++;
+                    // Push the article to the dataset
+                    await dataset.pushData(article);
+                    filteredArticles.push(article);
+                    extractedCount++;
+                }
             }
 
-            log.info(`Extracted ${extractedCount} articles in total`);
+            log.info(`Extracted ${filteredArticles.length} articles after filtering`);
         },
         // Handle errors
         failedRequestHandler({ request, error, log }) {
@@ -769,6 +775,129 @@ Actor.main(async () => {
         // Add retry configuration
         maxRequestRetries: 5,
     });
+
+    // Helper function to determine if an article is likely a true news article
+    function isLikelyNewsArticle(article) {
+        // Skip navigation links, section pages, and utility pages
+        const navigationPatterns = [
+            '/tools', '/about', '/contact', '/privacy', '/terms', 
+            '/subscribe', '/newsletter', '/rss', '/feed', '/search',
+            '/business', '/economy', '/politics', '/sports', '/lifestyle',
+            '/entertainment', '/technology', '/science', '/health',
+            '/opinion', '/video', '/audio', '/podcast', '/gallery',
+            '/category', '/section', '/tag', '/topic', '/author',
+            '/archive', '/sitemap', '/help', '/faq', '/support',
+            '/login', '/register', '/account', '/profile', '/settings'
+        ];
+
+        // Check if the link matches any navigation pattern
+        for (const pattern of navigationPatterns) {
+            if (article.link.includes(pattern)) {
+                // Special case: If the link includes both a navigation pattern AND a date pattern, it might still be an article
+                const hasDatePattern = /\/20\d{2}\/\d{2}\/\d{2}\//.test(article.link) || 
+                                      /\/20\d{2}-\d{2}-\d{2}\//.test(article.link);
+                
+                if (!hasDatePattern) {
+                    return false;
+                }
+            }
+        }
+
+        // Skip very short titles (likely navigation or utility links)
+        if (article.title.length < 20) {
+            return false;
+        }
+
+        // Skip titles that are just single words or very short phrases
+        if (article.title.split(' ').length < 3) {
+            return false;
+        }
+
+        // Skip titles that are just category names
+        const categoryNames = [
+            'News', 'Business', 'Sports', 'Entertainment', 'Politics', 
+            'Technology', 'Science', 'Health', 'Opinion', 'World', 
+            'Local', 'National', 'International', 'Economy', 'Finance',
+            'Markets', 'Money', 'Investing', 'Stocks', 'Bonds',
+            'Commodities', 'Currencies', 'Crypto', 'Real Estate',
+            'Energy', 'Oil', 'Gas', 'Aviation', 'Transport'
+        ];
+
+        for (const category of categoryNames) {
+            if (article.title === category) {
+                return false;
+            }
+        }
+
+        // Check if the title contains keywords that suggest it's a news article
+        const newsKeywords = [
+            'says', 'report', 'announce', 'launch', 'reveal', 'discover',
+            'study', 'research', 'find', 'show', 'prove', 'confirm',
+            'claim', 'allege', 'accuse', 'deny', 'refute', 'reject',
+            'approve', 'endorse', 'support', 'oppose', 'criticize',
+            'attack', 'defend', 'protest', 'demonstrate', 'rally',
+            'vote', 'elect', 'appoint', 'nominate', 'resign', 'fire',
+            'hire', 'promote', 'demote', 'award', 'honor', 'recognize',
+            'win', 'lose', 'defeat', 'beat', 'tie', 'draw', 'match',
+            'increase', 'decrease', 'rise', 'fall', 'grow', 'shrink',
+            'expand', 'contract', 'improve', 'worsen', 'strengthen',
+            'weaken', 'boost', 'reduce', 'cut', 'raise', 'lower'
+        ];
+
+        let containsNewsKeyword = false;
+        for (const keyword of newsKeywords) {
+            if (article.title.toLowerCase().includes(keyword)) {
+                containsNewsKeyword = true;
+                break;
+            }
+        }
+
+        // If the title is long enough and contains a news keyword, it's likely a news article
+        if (article.title.length > 40 && containsNewsKeyword) {
+            return true;
+        }
+
+        // If the title mentions a specific date or time period, it's likely a news article
+        if (article.title.match(/\b\d{4}\b/) || 
+            article.title.includes('yesterday') || 
+            article.title.includes('today') || 
+            article.title.includes('tomorrow') ||
+            article.title.includes('last week') ||
+            article.title.includes('next month')) {
+            return true;
+        }
+
+        // If the article has a date and the title is substantial, it's likely a news article
+        if (article.date && article.title.length > 30) {
+            return true;
+        }
+
+        // If the article has both a date and a summary, it's very likely a news article
+        if (article.date && article.summary && article.summary.length > 20) {
+            return true;
+        }
+
+        // If the title contains quotes, it's likely a news article
+        if (article.title.includes('"') || article.title.includes(''') || 
+            article.title.includes('"') || article.title.includes(''')) {
+            return true;
+        }
+
+        // For alarabiya.net specifically, apply additional checks
+        if (article.link.includes('alarabiya.net')) {
+            // Check if the link contains a news section pattern
+            const hasNewsSection = article.link.includes('/News/') || 
+                                  article.link.includes('/Views/') ||
+                                  article.link.includes('/Business/');
+            
+            if (hasNewsSection) {
+                return true;
+            }
+        }
+
+        // Default to false for anything that doesn't match the above criteria
+        return false;
+    }
 
     // Add the URL to the queue
     await crawler.run([url]);
