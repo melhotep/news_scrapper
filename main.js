@@ -878,8 +878,8 @@ Actor.main(async () => {
         }
 
         // If the title contains quotes, it's likely a news article
-        if (article.title.includes('"') || article.title.includes(''') || 
-            article.title.includes('"') || article.title.includes(''')) {
+        if (article.title.includes('"') || article.title.includes("'") || 
+            article.title.includes('"') || article.title.includes("'")) {
             return true;
         }
 
