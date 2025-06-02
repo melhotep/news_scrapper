@@ -66,12 +66,14 @@ Actor.main(async () => {
         console.log(`Extracted ${filteredArticles.length} articles after filtering`);
         
         // Save the results
-        if (filteredArticles.length > 0) {
+        if (filteredArticles && filteredArticles.length > 0) {
             // Track which methods were used
             filteredArticles.forEach(article => {
-                Object.values(article.methods || {}).forEach(method => {
-                    if (method) methodsUsed.add(method);
-                });
+                if (article.methods) {
+                    Object.values(article.methods).forEach(method => {
+                        if (method) methodsUsed.add(method);
+                    });
+                }
             });
 
             // Save to dataset
@@ -209,8 +211,8 @@ Actor.main(async () => {
                     'Cache-Control': 'max-age=0'
                 });
                 
-                // Advanced browser fingerprinting evasion
-                await page.evaluateOnNewDocument(() => {
+                // Advanced browser fingerprinting evasion - using context.addInitScript instead of evaluateOnNewDocument
+                await page.context().addInitScript(() => {
                     // Override navigator properties
                     const newProto = navigator.__proto__;
                     delete newProto.webdriver;
@@ -370,12 +372,14 @@ Actor.main(async () => {
                 log.info(`Extracted ${filteredArticles.length} articles after filtering`);
 
                 // Save the results
-                if (filteredArticles.length > 0) {
+                if (filteredArticles && filteredArticles.length > 0) {
                     // Track which methods were used
                     filteredArticles.forEach(article => {
-                        Object.values(article.methods || {}).forEach(method => {
-                            if (method) methodsUsed.add(method);
-                        });
+                        if (article.methods) {
+                            Object.values(article.methods).forEach(method => {
+                                if (method) methodsUsed.add(method);
+                            });
+                        }
                     });
 
                     // Save to dataset
@@ -2005,6 +2009,11 @@ async function extractAljazeeraResults(page, url) {
  * This is a much stricter version that ensures only true news articles are returned
  */
 function strictPostFilterArticles(articles, url) {
+    if (!articles || !Array.isArray(articles)) {
+        console.log('Warning: articles is not an array, returning empty array');
+        return [];
+    }
+    
     // First apply site-specific filtering
     let filteredArticles = applySiteSpecificFiltering(articles, url);
     
@@ -2152,6 +2161,11 @@ function strictPostFilterArticles(articles, url) {
  * Apply site-specific filtering rules
  */
 function applySiteSpecificFiltering(articles, url) {
+    if (!articles || !Array.isArray(articles)) {
+        console.log('Warning: articles is not an array in site-specific filtering, returning empty array');
+        return [];
+    }
+    
     // ADNOC site - should return no results as it's not a news site
     if (url.includes('adnoc.ae')) {
         return [];
