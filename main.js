@@ -1,5 +1,5 @@
 /**
- * Universal News Scraper Actor with 2Captcha Integration
+ * Universal News Scraper Actor with 2Captcha Integration and Strict Filtering
  * 
  * This actor scrapes news items from various dynamic news sites,
  * including those protected by reCAPTCHA, extracting title, link, date, and summary.
@@ -9,6 +9,7 @@
  * - reCAPTCHA solving using 2Captcha
  * - Proxy rotation for anti-blocking
  * - Multiple extraction methods with fallbacks
+ * - Strict filtering to ensure only true news articles are returned
  */
 
 const { Actor } = require('apify');
@@ -168,8 +169,8 @@ Actor.main(async () => {
             // Extract news items using multiple methods
             const articles = await extractNewsItems(page, url, log);
             
-            // Apply post-filtering to remove non-article content
-            const filteredArticles = postFilterArticles(articles, url);
+            // Apply strict post-filtering to remove non-article content
+            const filteredArticles = strictPostFilterArticles(articles, url);
             log.info(`Extracted ${filteredArticles.length} articles after filtering`);
 
             // Save the results
@@ -334,6 +335,9 @@ async function extractStandardArticles(page, url) {
                 } else if (titleElement && titleElement.querySelector('a')) {
                     link = titleElement.querySelector('a').href;
                 }
+                
+                // Skip if title or link is empty
+                if (!title || !link) return;
                 
                 // Extract date
                 let date = '';
@@ -1495,15 +1499,15 @@ async function extractAljazeeraResults(page, url) {
 }
 
 /**
- * Post-filter articles to remove non-article content
+ * Apply strict post-filtering to remove non-article content
+ * This is a much stricter version that ensures only true news articles are returned
  */
-function postFilterArticles(articles, url) {
-    // Skip filtering for specific sites that need all results
-    if (url.includes('aps.dz') || url.includes('ahram.org.eg')) {
-        return articles;
-    }
+function strictPostFilterArticles(articles, url) {
+    // First apply site-specific filtering
+    let filteredArticles = applySiteSpecificFiltering(articles, url);
     
-    return articles.filter(article => {
+    // Then apply general strict filtering
+    return filteredArticles.filter(article => {
         try {
             // Skip articles without a title or link
             if (!article.title || !article.link) return false;
@@ -1518,12 +1522,26 @@ function postFilterArticles(articles, url) {
                 article.link.includes('/terms/') ||
                 article.link.includes('/search') ||
                 article.link.includes('/login') ||
-                article.link.includes('/register')) {
+                article.link.includes('/register') ||
+                article.link.includes('/account') ||
+                article.link.includes('/profile') ||
+                article.link.includes('/settings') ||
+                article.link.includes('/help') ||
+                article.link.includes('/faq') ||
+                article.link.includes('/support') ||
+                article.link.includes('/feedback') ||
+                article.link.includes('/subscribe') ||
+                article.link.includes('/newsletter') ||
+                article.link.includes('/rss') ||
+                article.link.includes('/sitemap') ||
+                article.link.includes('/advertise') ||
+                article.link.includes('/careers') ||
+                article.link.includes('/jobs')) {
                 return false;
             }
             
             // Skip articles with very short titles
-            if (article.title.length < 15) return false;
+            if (article.title.length < 20) return false;
             
             // Skip articles with all-uppercase titles (likely section headers)
             if (article.title.toUpperCase() === article.title) return false;
@@ -1534,7 +1552,14 @@ function postFilterArticles(articles, url) {
                 article.title.includes('Breaking News') ||
                 article.title.includes('Top Stories') ||
                 article.title.includes('Menu') ||
-                article.title.includes('Navigation')) {
+                article.title.includes('Navigation') ||
+                article.title.includes('Search') ||
+                article.title.includes('Login') ||
+                article.title.includes('Register') ||
+                article.title.includes('Sign In') ||
+                article.title.includes('Sign Up') ||
+                article.title.includes('Subscribe') ||
+                article.title.includes('Newsletter')) {
                 return false;
             }
             
@@ -1546,27 +1571,148 @@ function postFilterArticles(articles, url) {
                 return false;
             }
             
-            // Special case for alarabiya.net
-            if (url.includes('alarabiya.net')) {
-                // Keep only articles with News, Middle East, etc. in the title or summary
-                if (!(article.title.includes('News') || 
-                      article.title.includes('Middle East') || 
-                      article.title.includes('Business') ||
-                      article.title.includes('Opinion') ||
-                      (article.summary && (
-                          article.summary.includes('News') || 
-                          article.summary.includes('Middle East') || 
-                          article.summary.includes('Business') ||
-                          article.summary.includes('Opinion')
-                      )))) {
-                    return false;
-                }
+            // Skip articles with image URLs in the title (common in navigation elements)
+            if (article.title.includes('.jpg') || 
+                article.title.includes('.png') || 
+                article.title.includes('.gif') ||
+                article.title.includes('.webp') ||
+                article.title.includes('.svg') ||
+                article.title.includes('http') ||
+                article.title.includes('www.')) {
+                return false;
+            }
+            
+            // Skip articles with very long titles (likely not real articles)
+            if (article.title.length > 200) return false;
+            
+            // Skip articles with titles that contain HTML or markdown
+            if (article.title.includes('<') || 
+                article.title.includes('>') || 
+                article.title.includes('```') ||
+                article.title.includes('###')) {
+                return false;
+            }
+            
+            // Skip articles with titles that are just URLs or paths
+            if (article.title.startsWith('/') || 
+                article.title.startsWith('http') || 
+                article.title.startsWith('www.')) {
+                return false;
+            }
+            
+            // Skip articles with titles that are just dates or numbers
+            if (/^\d+$/.test(article.title) || 
+                /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(article.title) || 
+                /^\d{1,2}-\d{1,2}-\d{2,4}$/.test(article.title)) {
+                return false;
+            }
+            
+            // Skip articles with titles that are just categories or tags
+            if (article.title === 'News' || 
+                article.title === 'Business' || 
+                article.title === 'Sports' ||
+                article.title === 'Entertainment' ||
+                article.title === 'Technology' ||
+                article.title === 'Politics' ||
+                article.title === 'Health' ||
+                article.title === 'Science' ||
+                article.title === 'World' ||
+                article.title === 'Local' ||
+                article.title === 'Opinion' ||
+                article.title === 'Lifestyle') {
+                return false;
+            }
+            
+            // For news articles, we expect at least one of these to be true:
+            // 1. Has a date
+            // 2. Has a substantial summary
+            // 3. Title contains quotes (indicating it's a news article)
+            // 4. Link contains year/month/day pattern (indicating it's a news article)
+            const hasDate = article.date && article.date.length > 0;
+            const hasSummary = article.summary && article.summary.length > 20;
+            const titleHasQuotes = article.title.includes('"') || article.title.includes("'");
+            const linkHasDatePattern = article.link.match(/\d{4}\/\d{1,2}\/\d{1,2}/) || 
+                                      article.link.match(/\d{4}-\d{1,2}-\d{1,2}/);
+            
+            if (!(hasDate || hasSummary || titleHasQuotes || linkHasDatePattern)) {
+                return false;
             }
             
             return true;
         } catch (error) {
-            console.error('Error in post-filtering:', error);
+            console.error('Error in strict post-filtering:', error);
             return false;
         }
     });
+}
+
+/**
+ * Apply site-specific filtering rules
+ */
+function applySiteSpecificFiltering(articles, url) {
+    // ADNOC site - should return no results as it's not a news site
+    if (url.includes('adnoc.ae')) {
+        return [];
+    }
+    
+    // Special case for alarabiya.net
+    if (url.includes('alarabiya.net')) {
+        return articles.filter(article => {
+            // Keep only articles with News, Middle East, etc. in the title or summary
+            if (article.title.includes('News') || 
+                article.title.includes('Middle East') || 
+                article.title.includes('Business') ||
+                article.title.includes('Opinion') ||
+                (article.summary && (
+                    article.summary.includes('News') || 
+                    article.summary.includes('Middle East') || 
+                    article.summary.includes('Business') ||
+                    article.summary.includes('Opinion')
+                ))) {
+                return true;
+            }
+            
+            // Keep articles with date patterns
+            if (article.date && (
+                article.date.includes('ago') || 
+                article.date.match(/\d{1,2}\s+\w+\s+\d{4}/) ||
+                article.date.match(/\d{1,2}\/\d{1,2}\/\d{4}/))) {
+                return true;
+            }
+            
+            // Keep articles with news-like URLs
+            if (article.link && (
+                article.link.includes('/News/') || 
+                article.link.includes('/news/') || 
+                article.link.includes('/middle-east/') ||
+                article.link.includes('/business/'))) {
+                return true;
+            }
+            
+            return false;
+        });
+    }
+    
+    // Special case for aps.dz
+    if (url.includes('aps.dz')) {
+        return articles.filter(article => {
+            // Keep only articles with numbered headings (1., 2., etc.)
+            if (article.methods && article.methods.title === 'aps-dz') {
+                return true;
+            }
+            
+            // Keep articles with date patterns
+            if (article.date && (
+                article.date.includes('CREATED ON') || 
+                article.date.match(/\d{1,2}\s+\w+\s+\d{4}/) ||
+                article.date.match(/\d{4}\-\d{1,2}\-\d{1,2}/))) {
+                return true;
+            }
+            
+            return false;
+        });
+    }
+    
+    // For all other sites, return the articles as is
+    return articles;
 }
