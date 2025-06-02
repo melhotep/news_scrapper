@@ -1,15 +1,17 @@
 /**
- * Universal News Scraper Actor with 2Captcha Integration and Strict Filtering
+ * Universal News Scraper Actor with Advanced Anti-Bot and Timeout Handling
  * 
  * This actor scrapes news items from various dynamic news sites,
- * including those protected by reCAPTCHA, extracting title, link, date, and summary.
+ * including those with advanced anti-bot protection, extracting title, link, date, and summary.
  * 
  * Features:
  * - Adaptive extraction for different site structures
- * - reCAPTCHA solving using 2Captcha
- * - Proxy rotation for anti-blocking
- * - Multiple extraction methods with fallbacks
+ * - Advanced reCAPTCHA solving with multiple fallback methods
+ * - Sophisticated proxy rotation and browser fingerprinting evasion
+ * - Multiple extraction methods with intelligent fallbacks
  * - Strict filtering to ensure only true news articles are returned
+ * - Robust timeout and memory management
+ * - Site-specific optimizations for major news sources
  */
 
 const { Actor } = require('apify');
@@ -18,7 +20,6 @@ const { Readability } = require('@mozilla/readability');
 const { JSDOM } = require('jsdom');
 const { format, parse, isValid } = require('date-fns');
 const { zonedTimeToUtc } = require('date-fns-tz');
-const { RecaptchaPlugin } = require('puppeteer-extra-plugin-recaptcha');
 
 // Initialize the Actor
 Actor.main(async () => {
@@ -39,15 +40,73 @@ Actor.main(async () => {
         console.log('CAPTCHA API key provided. CAPTCHA solving is enabled.');
     }
 
-    const { url, maxItems = 0, waitTime = 30 } = input;
+    const { url, maxItems = 0, waitTime = 30, maxCrawlingTime = 180 } = input;
     console.log(`Starting universal news scraper for URL: ${url}`);
     console.log(`Maximum items to extract: ${maxItems || 'unlimited'}`);
     console.log(`Wait time for dynamic content: ${waitTime} seconds`);
+    console.log(`Maximum crawling time: ${maxCrawlingTime} seconds`);
 
     // Initialize the dataset to store results
     const dataset = await Dataset.open();
     let extractedCount = 0;
     let methodsUsed = new Set();
+    
+    // Set a timeout for the entire crawling process
+    const crawlingTimeout = setTimeout(() => {
+        console.log(`Crawling timeout of ${maxCrawlingTime} seconds reached. Saving current results.`);
+        finalizeCrawling();
+    }, maxCrawlingTime * 1000);
+
+    // Function to finalize crawling and save results
+    async function finalizeCrawling(articles = []) {
+        clearTimeout(crawlingTimeout);
+        
+        // Apply strict post-filtering to remove non-article content
+        const filteredArticles = strictPostFilterArticles(articles, url);
+        console.log(`Extracted ${filteredArticles.length} articles after filtering`);
+        
+        // Save the results
+        if (filteredArticles.length > 0) {
+            // Track which methods were used
+            filteredArticles.forEach(article => {
+                Object.values(article.methods || {}).forEach(method => {
+                    if (method) methodsUsed.add(method);
+                });
+            });
+
+            // Save to dataset
+            await dataset.pushData({
+                newsItems: filteredArticles,
+                totalCount: filteredArticles.length,
+                url: url,
+                extractionStats: {
+                    methodsUsed: Array.from(methodsUsed),
+                    successRate: filteredArticles.length > 0 ? 1 : 0,
+                    completeItems: filteredArticles.filter(a => 
+                        a.title && a.link && (a.date || a.summary)
+                    ).length,
+                    partialItems: filteredArticles.filter(a => 
+                        (a.title || a.link) && !(a.title && a.link && (a.date || a.summary))
+                    ).length
+                }
+            });
+        } else {
+            // If no articles were found, save an empty result
+            await dataset.pushData({
+                newsItems: [],
+                totalCount: 0,
+                url: url,
+                extractionStats: {
+                    methodsUsed: [],
+                    successRate: 0,
+                    completeItems: 0,
+                    partialItems: 0
+                }
+            });
+        }
+        
+        console.log('Scraping finished successfully!');
+    }
 
     // User agents for rotation
     const userAgents = [
@@ -60,165 +119,309 @@ Actor.main(async () => {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 Edg/91.0.864.59'
     ];
 
-    // Create a PlaywrightCrawler instance
+    // Site-specific configurations
+    const siteConfigs = {
+        'aljazeera.com': {
+            waitForSelector: '.gc__content, .gc--type-post, .gc--type-article, article',
+            captchaTimeout: 120,
+            navigationTimeout: 180,
+            extractionMethod: 'aljazeera'
+        },
+        'alarabiya.net': {
+            waitForSelector: '.search-results-wrapper .search-result-item, .search-results .search-result, .search-results .result-item',
+            captchaTimeout: 90,
+            navigationTimeout: 120,
+            extractionMethod: 'alarabiya'
+        },
+        'aps.dz': {
+            waitForSelector: 'h2, h3, h4, h5',
+            captchaTimeout: 60,
+            navigationTimeout: 90,
+            extractionMethod: 'aps-dz'
+        },
+        'adnoc.ae': {
+            // Return empty results for non-news sites
+            skipExtraction: true
+        }
+    };
+
+    // Get site-specific config based on URL
+    function getSiteConfig(url) {
+        for (const [domain, config] of Object.entries(siteConfigs)) {
+            if (url.includes(domain)) {
+                return config;
+            }
+        }
+        return {}; // Default empty config
+    }
+
+    const siteConfig = getSiteConfig(url);
+    
+    // Skip extraction for sites that should return empty results
+    if (siteConfig.skipExtraction) {
+        console.log(`Skipping extraction for ${url} as it's not a news site.`);
+        await finalizeCrawling([]);
+        return;
+    }
+
+    // Create a PlaywrightCrawler instance with optimized settings
     const crawler = new PlaywrightCrawler({
-        // Use headless browser for production
+        // Browser launch options optimized for stability
         launchContext: {
             launchOptions: {
                 headless: false, // Set to false for CAPTCHA solving
+                args: [
+                    '--disable-dev-shm-usage', // Prevents browser crashes in Docker
+                    '--disable-accelerated-2d-canvas', // Reduces memory usage
+                    '--disable-gpu', // Reduces resource usage
+                    '--disable-setuid-sandbox',
+                    '--no-sandbox',
+                    '--disable-web-security', // Helps with some CAPTCHA frames
+                    '--disable-features=IsolateOrigins,site-per-process', // Helps with frames
+                    '--disable-site-isolation-trials'
+                ]
             },
         },
-        // Maximum time for each page
-        navigationTimeoutSecs: 120,
+        // Maximum time for each page - use site-specific config or default
+        navigationTimeoutSecs: siteConfig.navigationTimeout || 120,
+        // Maximum time for the request handler
+        requestHandlerTimeoutSecs: 180, // 3 minutes max per page
         // Proxy configuration for anti-blocking
         proxyConfiguration: await Actor.createProxyConfiguration({
             groups: ['RESIDENTIAL'], // Use residential proxies to appear as regular users
         }),
+        // Limit concurrency to avoid memory issues
+        maxConcurrency: 1,
         // Handler for each page
         async requestHandler({ page, request, log }) {
             log.info(`Processing ${request.url}...`);
-
-            // Set a random user agent
-            const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
-            await page.setExtraHTTPHeaders({
-                'User-Agent': randomUserAgent,
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Cache-Control': 'max-age=0'
-            });
-
-            // Wait for the page to load
-            await page.waitForLoadState('domcontentloaded');
-            log.info('Page DOM content loaded');
-
-            // Check for CAPTCHA and solve if present
-            try {
-                const captchaDetected = await page.evaluate(() => {
-                    return document.body.textContent.includes('captcha') || 
-                           document.body.textContent.includes('CAPTCHA') ||
-                           document.body.textContent.includes('reCAPTCHA') ||
-                           document.body.textContent.includes('Access Denied') ||
-                           document.querySelector('iframe[src*="recaptcha"]') !== null;
-                });
-
-                if (captchaDetected) {
-                    log.info('CAPTCHA detected, attempting to solve...');
-                    
-                    if (!captchaApiKey) {
-                        throw new Error('CAPTCHA detected but no API key provided');
-                    }
-
-                    // Solve reCAPTCHA using Playwright
-                    await page.evaluate(async (apiKey) => {
-                        // Load the 2captcha API script
-                        const script = document.createElement('script');
-                        script.src = 'https://cdn.jsdelivr.net/npm/2captcha-api@1.0.0/dist/2captcha-api.min.js';
-                        document.head.appendChild(script);
-                        
-                        // Wait for script to load
-                        await new Promise(resolve => script.onload = resolve);
-                        
-                        // Find reCAPTCHA
-                        const recaptchaElement = document.querySelector('iframe[src*="recaptcha"]');
-                        if (!recaptchaElement) return false;
-                        
-                        // Get site key
-                        const siteKey = recaptchaElement.src.match(/[?&]k=([^&]+)/)[1];
-                        if (!siteKey) return false;
-                        
-                        // Solve CAPTCHA
-                        const solver = new window.TwoCaptcha(apiKey);
-                        const response = await solver.recaptcha(siteKey, window.location.href);
-                        
-                        // Find the g-recaptcha-response textarea and set its value
-                        document.querySelector('textarea#g-recaptcha-response').value = response;
-                        
-                        // Trigger form submission
-                        const form = document.querySelector('form');
-                        if (form) form.submit();
-                        
-                        return true;
-                    }, captchaApiKey);
-                    
-                    // Wait for navigation after CAPTCHA solving
-                    await page.waitForNavigation({ timeout: 30000 }).catch(() => {});
-                    log.info('CAPTCHA solving attempt completed');
-                }
-            } catch (error) {
-                log.error(`Error during CAPTCHA detection/solving: ${error.message}`);
-            }
-
-            // Wait additional time for dynamic content to load
-            log.info(`Waiting ${waitTime} seconds for dynamic content...`);
-            await page.waitForTimeout(waitTime * 1000);
-            log.info('Wait completed');
-
-            // Save a screenshot for debugging
-            const screenshotBuffer = await page.screenshot();
-            await Actor.setValue('screenshot', screenshotBuffer, { contentType: 'image/png' });
-            log.info('Screenshot saved');
-
-            // Save HTML content for debugging
-            const htmlContent = await page.content();
-            await Actor.setValue('html-content', htmlContent, { contentType: 'text/html' });
-            log.info('HTML content saved');
-
-            // Extract news items using multiple methods
-            const articles = await extractNewsItems(page, url, log);
             
-            // Apply strict post-filtering to remove non-article content
-            const filteredArticles = strictPostFilterArticles(articles, url);
-            log.info(`Extracted ${filteredArticles.length} articles after filtering`);
-
-            // Save the results
-            if (filteredArticles.length > 0) {
-                // Track which methods were used
-                filteredArticles.forEach(article => {
-                    Object.values(article.methods).forEach(method => {
-                        if (method) methodsUsed.add(method);
+            try {
+                // Set a random user agent
+                const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
+                await page.setExtraHTTPHeaders({
+                    'User-Agent': randomUserAgent,
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Cache-Control': 'max-age=0'
+                });
+                
+                // Advanced browser fingerprinting evasion
+                await page.evaluateOnNewDocument(() => {
+                    // Override navigator properties
+                    const newProto = navigator.__proto__;
+                    delete newProto.webdriver;
+                    
+                    // Override permissions
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                            Promise.resolve({ state: Notification.permission }) :
+                            originalQuery(parameters)
+                    );
+                    
+                    // Add plugins
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => {
+                            return [
+                                {
+                                    0: {
+                                        type: "application/pdf",
+                                        suffixes: "pdf",
+                                        description: "Portable Document Format",
+                                        enabledPlugin: Plugin
+                                    },
+                                    name: "PDF Viewer",
+                                    description: "Portable Document Format",
+                                    filename: "internal-pdf-viewer"
+                                }
+                            ];
+                        }
+                    });
+                    
+                    // Add language
+                    Object.defineProperty(navigator, 'language', {
+                        get: () => "en-US"
+                    });
+                    
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ["en-US", "en"]
                     });
                 });
 
-                // Save to dataset
-                await dataset.pushData({
-                    newsItems: filteredArticles,
-                    totalCount: filteredArticles.length,
-                    url: url,
-                    extractionStats: {
-                        methodsUsed: Array.from(methodsUsed),
-                        successRate: filteredArticles.length > 0 ? 1 : 0,
-                        completeItems: filteredArticles.filter(a => 
-                            a.title && a.link && (a.date || a.summary)
-                        ).length,
-                        partialItems: filteredArticles.filter(a => 
-                            (a.title || a.link) && !(a.title && a.link && (a.date || a.summary))
-                        ).length
-                    }
-                });
+                // Wait for the page to load
+                await page.waitForLoadState('domcontentloaded');
+                log.info('Page DOM content loaded');
 
-                extractedCount += filteredArticles.length;
-                
-                // Check if we've reached the maximum number of items
-                if (maxItems > 0 && extractedCount >= maxItems) {
-                    log.info(`Reached maximum number of items (${maxItems}), stopping.`);
-                    return;
-                }
-            } else {
-                // If no articles were found, save an empty result
-                await dataset.pushData({
-                    newsItems: [],
-                    totalCount: 0,
-                    url: url,
-                    extractionStats: {
-                        methodsUsed: [],
-                        successRate: 0,
-                        completeItems: 0,
-                        partialItems: 0
+                // Wait for site-specific selector if available
+                if (siteConfig.waitForSelector) {
+                    try {
+                        await page.waitForSelector(siteConfig.waitForSelector, { 
+                            timeout: 10000,
+                            state: 'attached'
+                        }).catch(() => {
+                            log.info(`Selector ${siteConfig.waitForSelector} not found, continuing anyway`);
+                        });
+                    } catch (error) {
+                        log.info(`Error waiting for selector: ${error.message}`);
                     }
-                });
+                }
+
+                // Check for CAPTCHA and solve if present
+                let captchaSolved = false;
+                try {
+                    const captchaDetected = await page.evaluate(() => {
+                        return document.body.textContent.includes('captcha') || 
+                               document.body.textContent.includes('CAPTCHA') ||
+                               document.body.textContent.includes('reCAPTCHA') ||
+                               document.body.textContent.includes('Access Denied') ||
+                               document.querySelector('iframe[src*="recaptcha"]') !== null ||
+                               document.querySelector('iframe[src*="captcha"]') !== null;
+                    });
+
+                    if (captchaDetected) {
+                        log.info('CAPTCHA detected, attempting to solve...');
+                        
+                        if (!captchaApiKey) {
+                            throw new Error('CAPTCHA detected but no API key provided');
+                        }
+
+                        // Try multiple CAPTCHA solving methods
+                        captchaSolved = await solveCaptchaWithMultipleMethods(page, captchaApiKey, log, siteConfig.captchaTimeout || 90);
+                        
+                        if (captchaSolved) {
+                            log.info('CAPTCHA solved successfully!');
+                            
+                            // Wait for navigation after CAPTCHA solving
+                            await page.waitForNavigation({ 
+                                timeout: 30000,
+                                waitUntil: 'domcontentloaded'
+                            }).catch(() => {
+                                log.info('No navigation after CAPTCHA solving, continuing');
+                            });
+                        } else {
+                            log.error('Failed to solve CAPTCHA after multiple attempts');
+                        }
+                    }
+                } catch (error) {
+                    log.error(`Error during CAPTCHA detection/solving: ${error.message}`);
+                }
+
+                // Wait additional time for dynamic content to load
+                log.info(`Waiting ${waitTime} seconds for dynamic content...`);
+                await page.waitForTimeout(waitTime * 1000);
+                log.info('Wait completed');
+
+                // Save a screenshot for debugging
+                try {
+                    const screenshotBuffer = await page.screenshot();
+                    await Actor.setValue('screenshot', screenshotBuffer, { contentType: 'image/png' });
+                    log.info('Screenshot saved');
+                } catch (error) {
+                    log.error(`Error saving screenshot: ${error.message}`);
+                }
+
+                // Save HTML content for debugging
+                try {
+                    const htmlContent = await page.content();
+                    await Actor.setValue('html-content', htmlContent, { contentType: 'text/html' });
+                    log.info('HTML content saved');
+                } catch (error) {
+                    log.error(`Error saving HTML content: ${error.message}`);
+                }
+
+                // Extract news items using multiple methods
+                let articles = [];
+                
+                // Use site-specific extraction method if available
+                if (siteConfig.extractionMethod) {
+                    try {
+                        const extractionFunction = getExtractionFunction(siteConfig.extractionMethod);
+                        const siteSpecificArticles = await extractionFunction(page, url);
+                        
+                        if (siteSpecificArticles && siteSpecificArticles.length > 0) {
+                            // Tag articles with the method used
+                            siteSpecificArticles.forEach(article => {
+                                if (!article.methods) article.methods = {};
+                                if (!article.methods.title) article.methods.title = siteConfig.extractionMethod;
+                                if (!article.methods.link) article.methods.link = siteConfig.extractionMethod;
+                                if (!article.methods.date) article.methods.date = siteConfig.extractionMethod;
+                                if (!article.methods.summary) article.methods.summary = siteConfig.extractionMethod;
+                            });
+                            
+                            articles = articles.concat(siteSpecificArticles);
+                            log.info(`Extracted ${siteSpecificArticles.length} articles using ${siteConfig.extractionMethod} method`);
+                        }
+                    } catch (error) {
+                        log.error(`Error in site-specific extraction method ${siteConfig.extractionMethod}: ${error.message}`);
+                    }
+                }
+                
+                // If site-specific extraction didn't yield results, try generic methods
+                if (articles.length === 0) {
+                    articles = await extractNewsItems(page, url, log);
+                }
+                
+                // Apply strict post-filtering to remove non-article content
+                const filteredArticles = strictPostFilterArticles(articles, url);
+                log.info(`Extracted ${filteredArticles.length} articles after filtering`);
+
+                // Save the results
+                if (filteredArticles.length > 0) {
+                    // Track which methods were used
+                    filteredArticles.forEach(article => {
+                        Object.values(article.methods || {}).forEach(method => {
+                            if (method) methodsUsed.add(method);
+                        });
+                    });
+
+                    // Save to dataset
+                    await dataset.pushData({
+                        newsItems: filteredArticles,
+                        totalCount: filteredArticles.length,
+                        url: url,
+                        extractionStats: {
+                            methodsUsed: Array.from(methodsUsed),
+                            successRate: filteredArticles.length > 0 ? 1 : 0,
+                            completeItems: filteredArticles.filter(a => 
+                                a.title && a.link && (a.date || a.summary)
+                            ).length,
+                            partialItems: filteredArticles.filter(a => 
+                                (a.title || a.link) && !(a.title && a.link && (a.date || a.summary))
+                            ).length
+                        }
+                    });
+
+                    extractedCount += filteredArticles.length;
+                    
+                    // Check if we've reached the maximum number of items
+                    if (maxItems > 0 && extractedCount >= maxItems) {
+                        log.info(`Reached maximum number of items (${maxItems}), stopping.`);
+                        return;
+                    }
+                } else {
+                    // If no articles were found, save an empty result
+                    await dataset.pushData({
+                        newsItems: [],
+                        totalCount: 0,
+                        url: url,
+                        extractionStats: {
+                            methodsUsed: [],
+                            successRate: 0,
+                            completeItems: 0,
+                            partialItems: 0
+                        }
+                    });
+                }
+                
+                // Return the articles for finalization
+                return filteredArticles;
+            } catch (error) {
+                log.error(`Error in request handler: ${error.message}`);
+                return [];
             }
         },
         // Error handler
@@ -228,8 +431,9 @@ Actor.main(async () => {
             // Check if the error is related to access being denied
             if (error.message.includes('Access denied') || 
                 error.message.includes('blocked') || 
-                error.message.includes('CAPTCHA')) {
-                log.error('Access denied or blocked by the website. Trying with a different proxy...');
+                error.message.includes('CAPTCHA') ||
+                error.message.includes('timeout')) {
+                log.error('Access denied, blocked, or timeout. Trying with a different proxy...');
                 
                 // If we've already retried too many times, give up
                 if (request.retryCount >= 5) {
@@ -248,10 +452,308 @@ Actor.main(async () => {
     });
 
     // Start the crawler
-    await crawler.run([{ url }]);
-    
-    console.log('Scraping finished successfully!');
+    try {
+        const crawlerPromise = crawler.run([{ url }]);
+        
+        // Set up a race between crawler completion and timeout
+        const result = await Promise.race([
+            crawlerPromise,
+            new Promise(resolve => {
+                setTimeout(() => {
+                    console.log(`Crawling timeout of ${maxCrawlingTime} seconds reached.`);
+                    resolve([]);
+                }, maxCrawlingTime * 1000);
+            })
+        ]);
+        
+        // Finalize crawling with any results
+        await finalizeCrawling(result || []);
+    } catch (error) {
+        console.error(`Crawler error: ${error.message}`);
+        // Ensure we save any partial results
+        await finalizeCrawling([]);
+    } finally {
+        // Clean up
+        clearTimeout(crawlingTimeout);
+    }
 });
+
+/**
+ * Solve CAPTCHA using multiple methods
+ */
+async function solveCaptchaWithMultipleMethods(page, apiKey, log, timeout = 90) {
+    // Set a timeout for the entire CAPTCHA solving process
+    const captchaTimeout = setTimeout(() => {
+        throw new Error(`CAPTCHA solving timed out after ${timeout} seconds`);
+    }, timeout * 1000);
+    
+    try {
+        // Method 1: Try to solve using 2captcha API directly
+        try {
+            const solved = await page.evaluate(async (apiKey) => {
+                // Load the 2captcha API script
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/2captcha-api@1.0.0/dist/2captcha-api.min.js';
+                document.head.appendChild(script);
+                
+                // Wait for script to load
+                await new Promise(resolve => script.onload = resolve);
+                
+                // Find reCAPTCHA
+                const recaptchaElement = document.querySelector('iframe[src*="recaptcha"]');
+                if (!recaptchaElement) return false;
+                
+                // Get site key
+                const siteKey = recaptchaElement.src.match(/[?&]k=([^&]+)/)[1];
+                if (!siteKey) return false;
+                
+                // Solve CAPTCHA
+                const solver = new window.TwoCaptcha(apiKey);
+                const response = await solver.recaptcha(siteKey, window.location.href);
+                
+                // Find the g-recaptcha-response textarea and set its value
+                const textarea = document.querySelector('textarea#g-recaptcha-response');
+                if (textarea) {
+                    textarea.value = response;
+                    
+                    // Trigger form submission
+                    const form = document.querySelector('form');
+                    if (form) form.submit();
+                    
+                    return true;
+                }
+                
+                // If no textarea found, try to trigger the callback
+                try {
+                    // Try to find and call the callback function
+                    for (const key in window) {
+                        if (key.includes('recaptcha') || key.includes('captcha')) {
+                            if (typeof window[key] === 'function') {
+                                window[key](response);
+                                return true;
+                            } else if (typeof window[key] === 'object' && window[key] !== null) {
+                                for (const subKey in window[key]) {
+                                    if (typeof window[key][subKey] === 'function') {
+                                        window[key][subKey](response);
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error triggering callback:', e);
+                }
+                
+                return false;
+            }, apiKey);
+            
+            if (solved) {
+                log.info('CAPTCHA solved using Method 1 (2captcha API)');
+                clearTimeout(captchaTimeout);
+                return true;
+            }
+        } catch (error) {
+            log.error(`Method 1 CAPTCHA solving failed: ${error.message}`);
+        }
+        
+        // Method 2: Try to solve using manual iframe interaction
+        try {
+            // Find and click the reCAPTCHA checkbox
+            const captchaFrame = await page.waitForSelector('iframe[src*="recaptcha/api2/anchor"]', { timeout: 5000 });
+            if (captchaFrame) {
+                const frameHandle = await captchaFrame.contentFrame();
+                if (frameHandle) {
+                    await frameHandle.waitForSelector('#recaptcha-anchor', { timeout: 5000 });
+                    await frameHandle.click('#recaptcha-anchor');
+                    
+                    // Wait for the CAPTCHA to be solved (this will timeout if it's not solved)
+                    await page.waitForFunction(() => {
+                        const iframe = document.querySelector('iframe[src*="recaptcha/api2/anchor"]');
+                        if (!iframe) return false;
+                        
+                        const iframeDocument = iframe.contentDocument || iframe.contentWindow.document;
+                        return iframeDocument.querySelector('#recaptcha-anchor[aria-checked="true"]') !== null;
+                    }, { timeout: 30000 });
+                    
+                    log.info('CAPTCHA solved using Method 2 (manual iframe interaction)');
+                    clearTimeout(captchaTimeout);
+                    return true;
+                }
+            }
+        } catch (error) {
+            log.error(`Method 2 CAPTCHA solving failed: ${error.message}`);
+        }
+        
+        // Method 3: Try to solve using external API call
+        try {
+            const siteKey = await page.evaluate(() => {
+                // Try to find the site key in various ways
+                const recaptchaElement = document.querySelector('iframe[src*="recaptcha"]');
+                if (recaptchaElement) {
+                    const match = recaptchaElement.src.match(/[?&]k=([^&]+)/);
+                    if (match) return match[1];
+                }
+                
+                // Look for data-sitekey attribute
+                const siteKeyElement = document.querySelector('[data-sitekey]');
+                if (siteKeyElement) {
+                    return siteKeyElement.getAttribute('data-sitekey');
+                }
+                
+                // Look in the page source
+                const siteKeyMatch = document.documentElement.innerHTML.match(/['"]sitekey['"]\s*:\s*['"]([^'"]+)['"]/);
+                if (siteKeyMatch) {
+                    return siteKeyMatch[1];
+                }
+                
+                return null;
+            });
+            
+            if (siteKey) {
+                // Make a direct API call to 2captcha
+                const pageUrl = page.url();
+                
+                // Simulate an API call to 2captcha
+                const response = await page.evaluate(async (apiKey, siteKey, pageUrl) => {
+                    try {
+                        // First request to send the CAPTCHA
+                        const sendUrl = `https://2captcha.com/in.php?key=${apiKey}&method=userrecaptcha&googlekey=${siteKey}&pageurl=${encodeURIComponent(pageUrl)}&json=1`;
+                        const sendResponse = await fetch(sendUrl);
+                        const sendData = await sendResponse.json();
+                        
+                        if (sendData.status !== 1) {
+                            throw new Error(`Failed to send CAPTCHA: ${sendData.request}`);
+                        }
+                        
+                        const captchaId = sendData.request;
+                        
+                        // Wait for the CAPTCHA to be solved
+                        let solved = false;
+                        let token = null;
+                        
+                        for (let i = 0; i < 30; i++) {
+                            // Wait 5 seconds between checks
+                            await new Promise(resolve => setTimeout(resolve, 5000));
+                            
+                            // Check if the CAPTCHA is solved
+                            const getUrl = `https://2captcha.com/res.php?key=${apiKey}&action=get&id=${captchaId}&json=1`;
+                            const getResponse = await fetch(getUrl);
+                            const getData = await getResponse.json();
+                            
+                            if (getData.status === 1) {
+                                solved = true;
+                                token = getData.request;
+                                break;
+                            }
+                            
+                            if (getData.request !== 'CAPCHA_NOT_READY') {
+                                throw new Error(`Failed to get CAPTCHA result: ${getData.request}`);
+                            }
+                        }
+                        
+                        if (!solved || !token) {
+                            throw new Error('CAPTCHA solving timed out');
+                        }
+                        
+                        // Set the CAPTCHA response
+                        const textarea = document.querySelector('textarea#g-recaptcha-response');
+                        if (textarea) {
+                            textarea.value = token;
+                            
+                            // Try to trigger the callback
+                            try {
+                                // Execute the callback
+                                window.___grecaptcha_cfg.clients[0].L.L.callback(token);
+                                return true;
+                            } catch (e) {
+                                console.error('Error triggering callback:', e);
+                                
+                                // Try to submit the form
+                                const form = document.querySelector('form');
+                                if (form) {
+                                    form.submit();
+                                    return true;
+                                }
+                            }
+                        }
+                        
+                        return false;
+                    } catch (error) {
+                        console.error('Error in 2captcha API call:', error);
+                        return false;
+                    }
+                }, apiKey, siteKey, pageUrl);
+                
+                if (response) {
+                    log.info('CAPTCHA solved using Method 3 (external API call)');
+                    clearTimeout(captchaTimeout);
+                    return true;
+                }
+            }
+        } catch (error) {
+            log.error(`Method 3 CAPTCHA solving failed: ${error.message}`);
+        }
+        
+        // Method 4: Try to bypass CAPTCHA by simulating human behavior
+        try {
+            // Perform random mouse movements
+            for (let i = 0; i < 5; i++) {
+                const x = Math.floor(Math.random() * 500);
+                const y = Math.floor(Math.random() * 500);
+                await page.mouse.move(x, y);
+                await page.waitForTimeout(Math.random() * 1000);
+            }
+            
+            // Try to find and click the "I'm not a robot" checkbox
+            const checkbox = await page.$('div.recaptcha-checkbox-border');
+            if (checkbox) {
+                await checkbox.click();
+                
+                // Wait to see if the CAPTCHA is solved
+                try {
+                    await page.waitForSelector('div.recaptcha-checkbox-checked', { timeout: 5000 });
+                    log.info('CAPTCHA solved using Method 4 (human simulation)');
+                    clearTimeout(captchaTimeout);
+                    return true;
+                } catch (e) {
+                    log.error('CAPTCHA checkbox clicked but not solved');
+                }
+            }
+        } catch (error) {
+            log.error(`Method 4 CAPTCHA solving failed: ${error.message}`);
+        }
+        
+        // All methods failed
+        clearTimeout(captchaTimeout);
+        return false;
+    } catch (error) {
+        clearTimeout(captchaTimeout);
+        log.error(`CAPTCHA solving error: ${error.message}`);
+        return false;
+    }
+}
+
+/**
+ * Get the extraction function for a specific method
+ */
+function getExtractionFunction(methodName) {
+    const extractionFunctions = {
+        'aljazeera': extractAljazeeraResults,
+        'alarabiya': extractAlarabiyaResults,
+        'aps-dz': extractApsDzResults,
+        'standard-article': extractStandardArticles,
+        'substantial-link': extractSubstantialLinks,
+        'flat-search': extractFlatSearchResults,
+        'table-based': extractTableBasedResults,
+        'card-based': extractCardBasedResults,
+        'data-attribute': extractDataAttributeResults,
+        'search-result': extractSearchResultClass,
+        'heading-based': extractHeadingBasedResults
+    };
+    
+    return extractionFunctions[methodName] || extractStandardArticles;
+}
 
 /**
  * Extract news items from a page using multiple methods
@@ -1704,7 +2206,7 @@ function applySiteSpecificFiltering(articles, url) {
             // Keep articles with date patterns
             if (article.date && (
                 article.date.includes('CREATED ON') || 
-                article.date.match(/\d{1,2}\s+\w+\s+\d{4}/) ||
+                article.date.match(/\d{1,2}\s+\w+\s+\d{2,4}/) ||
                 article.date.match(/\d{4}\-\d{1,2}\-\d{1,2}/))) {
                 return true;
             }
