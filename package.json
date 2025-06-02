@@ -10,7 +10,10 @@
     "@mozilla/readability": "^0.4.2",
     "jsdom": "^21.1.0",
     "date-fns": "^2.29.3",
-    "date-fns-tz": "^2.0.0"
+    "date-fns-tz": "^2.0.0",
+    "2captcha": "^3.0.5",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-recaptcha": "^3.6.8"
   },
   "scripts": {
     "start": "node main.js"
